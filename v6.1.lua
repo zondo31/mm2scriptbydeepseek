@@ -69,6 +69,52 @@
          не на каждое изменение количества — иначе она вытесняла из окна лога
          метку сборки и ошибки.
 
+      J) НЕ ЛЕТИМ С ЛОББИ (v6.1.4, усилено в v6.1.5). Если в этом раунде ещё
+         ничего не собрано, а ближайшая монета дальше FAR_HOLD_DIST (1500 ст),
+         бот считает, что он не на карте (спавн/межраундье), и НЕ летит через
+         полкарты: стоит, пока игра сама не перенесёт персонажа на карту.
+         Дальний перелёт из v6.1.3 остался для честно далёких монет, когда бот
+         уже на карте (после первой собранной монеты порог не действует).
+         v6.1.5: таймаута БОЛЬШЕ НЕТ. В 6.1.4 через FAR_HOLD_MAX (30 c) бот всё
+         равно летел — и в лобби это снова давало «лечу к ближайшей (8866 ст)».
+         Теперь FAR_HOLD_MAX только печатает подробную диагностику.
+
+      K) SMART SPEED ПО ВЕКТОРУ (v6.1.4). Скорость считается по длине 3D-пути
+         (dist3), а не по горизонтальной проекции: наискосок/вверх бот получает
+         ту же скорость, что и по прямой, и не «сначала вперёд, потом вверх».
+
+      L) ПОДБОР ПО МЕШКУ (v6.1.4). Вместимость мешка берётся из события сервера,
+         а если её там нет — из GUI игры (текст ровно вида «N/M»). Ресет теперь
+         срабатывает по факту «мешок полон» (50/50 или 40/40 — как в сезоне), а
+         RESET_AT_COINS остался страховкой для игр без вместимости в событии.
+         Там же исправлено падение «:2026: attempt to index nil with 'Position'»:
+         цель могла обнулиться обработчиком валюты прямо посреди полёта.
+
+      M) В ОЖИДАНИИ БОТ НЕ ТРОГАЕТ ПЕРСОНАЖА (v6.1.5). Это и была причина
+         «зафризился в лобби, когда раунд начался»: пока фарм запущен, позиция
+         удерживалась записью CFrame (holdStill) каждый кадр, noclip был включён,
+         а гуманоид стоял в PlatformStand. Когда сервер переносил персонажа на
+         карту, наша же запись CFrame в том же кадре возвращала его назад, и бот
+         оставался в лобби на весь раунд. Теперь в режиме lobbyHold бот:
+           • не пишет CFrame (вместо holdStill(0.3) — просто task.wait(0.3));
+           • выключает noclip (коллизии персонажа возвращаются);
+           • выключает PlatformStand (гуманоид обычный: работают и MoveTo, и
+             серверный перенос).
+         В лог при этом идёт «жду карту: монета N ст > 1500 | я (x, y, z) |
+         монет N | заякорен: false», а в статусе — «жду карту: N ст, M c».
+
+      N) СЛАЙДЕР СКОРОСТИ СТАЛ РЕАЛЬНЫМ (v6.1.6). Значение слайдера (1..50) было
+         МНОЖИТЕЛЕМ к «умной» базе (5 * (0.6..3) * слайдер), поэтому всё, что
+         выше 10, упиралось в прежний SPEED_CAP = 30 ст/с: 20 и 50 давали одно и
+         то же, а разница чувствовалась только на 1..7. Теперь шкала линейная и
+         означает скорость в ст/с: 1 -> SPEED_LO (10), 50 -> SPEED_HI (80), шаг
+         ≈1.4 ст/с. На слайдере видно «Speed: 25 (45 ст/с)», в статусе — «v=45.0».
+         Smart Speed больше не «съедает» шкалу: у самой цели (ближе
+         SMART_REF_DIST = 120) он добавляет до SMART_BOOST = 1.5x, потолок
+         SPEED_CAP = 100. Заодно MAX_FRAME_MOVE поднят 1.5 -> 3 студа за кадр:
+         старый предел обрезал верх шкалы до 45 ст/с на 30 fps (1.5 студа/кадр).
+         MIN_FARM_SPEED удалён — нижнюю границу теперь задаёт SPEED_LO.
+
     ГЛАВНОЕ В v6.0 (осталось в силе):
 
       B) AUTO RESET СНОВА РАБОТАЕТ. Раньше при ALLOW_SELF_RESET = false он
@@ -156,8 +202,9 @@
          и поток фарма умирал навсегда, без сообщений (бот просто стоял).
          Теперь каждый шаг в pcall и любая ошибка печатается.
       3) СКОРОСТЬ. При Smart Speed = 1 множитель на дальней дистанции давал
-         ~3 студа/с (медленнее ходьбы). Добавлен CONFIG.MIN_FARM_SPEED = 10,
-         а слайдер по умолчанию стоит на 5 — это 15..30 студов/с, как в v5.2.
+         ~3 студа/с (медленнее ходьбы), поэтому у скорости есть нижняя граница
+         и «умное» ускорение у цели (в 6.1.6 шкала слайдера переделана в
+         ст/с — см. пункт N).
       4) FALLBACK ДВИЖЕНИЯ. Если CFrame-запись персонажа не сдвигает (игра/
          физика возвращает позицию), бот сам переключается на velocity-толчок
          и пишет об этом в консоль.
@@ -217,16 +264,16 @@ local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
 local CONFIG = {
     PASSWORD     = "salt",
 
-    -- Скорость
+    -- Скорость. v6.1.6: слайдер — это РЕАЛЬНАЯ скорость (ст/с), а не множитель.
     SPEED_MIN    = 1,
     SPEED_MAX    = 50,
-    SPEED_CAP    = 30,      -- жёсткий потолок итоговой скорости
-    SMART_BASE   = 5,       -- база "умной скорости" (студов/сек)
-    SMART_REF_DIST   = 45,  -- на этой дистанции множитель = 1
-    SMART_FACTOR_MIN = 0.6,
-    SMART_FACTOR_MAX = 3,   -- ближе к цели -> быстрее
-    MAX_FRAME_MOVE   = 1.5, -- максимум студов за кадр (анти-"invalid position")
-    MIN_FARM_SPEED   = 10,  -- нижняя граница скорости фарма (Smart ON), чтобы бот реально ехал
+    SPEED_LO     = 10,      -- ст/с при слайдере 1
+    SPEED_HI     = 80,      -- ст/с при слайдере 50 (+1.43 ст/с на каждый шаг)
+    SPEED_CAP    = 100,     -- жёсткий потолок итоговой (после «умного» ускорения)
+    SMART_REF_DIST = 120,   -- ближе этого расстояния Smart Speed добавляет скорость
+    SMART_BOOST  = 1.5,     -- ...и не больше чем в 1.5 раза (у самой цели)
+    MAX_FRAME_MOVE = 3.0,   -- максимум студов за кадр (анти-"invalid position");
+                            -- 1.5 обрезал верх слайдера на 30 fps (45 ст/с)
     FLY_SPEED    = 70,      -- скорость ручного полёта
 
     -- Диагностика: состояние фарма дублируется в лог окна (вкладка Farm)
@@ -238,9 +285,18 @@ local CONFIG = {
     COIN_RANGE   = 350,
     -- v6.1.3: «дальний перелёт». Если в радиусе COIN_RANGE валюты нет (персонаж
     -- в лобби или на другом краю карты), бот всё равно летит к ближайшей монете,
-    -- но на скорости FLY_SPEED: обычные 30 ст/с превращали 2000 студов в минуту
-    -- стояния на месте. Ближе FAR_DIST ускорение не включается.
+    -- но на скорости FLY_SPEED: обычная скорость фарма превращала 2000 студов в
+    -- минуту стояния на месте. Ближе FAR_DIST ускорение не включается.
     FAR_DIST     = 400,
+    -- v6.1.4: ПОРОГ «МЫ В ЛОББИ». Пока в этом раунде не собрано ни одной монеты и
+    -- ближайшая валюта дальше этого значения, бот НЕ летит (иначе он уезжал из
+    -- лобби к монете за 8000 студов и не давал игре перенести себя на карту).
+    -- 0 = выключить проверку. 1500..2000 — рабочие значения для MM2.
+    FAR_HOLD_DIST = 1500,
+    -- v6.1.5: через сколько секунд стояния вывести ПОДРОБНУЮ диагностику (позиция,
+    -- сколько монет, заякорен ли персонаж). Это только лог: лететь всё равно не
+    -- будем — в 6.1.4 полёт после таймаута ломал перенос на карту.
+    FAR_HOLD_MAX  = 30,
     STOP_DIST    = 2,       -- догнал = горизонталь <= этого (студов)
     PICKUP_LIFT  = 1,       -- насколько корень выше центра висящей валюты
     FLOOR_TOLERANCE = 2.5,  -- v6.0: валюта выше пола на столько = висит в воздухе
@@ -300,6 +356,9 @@ local CONFIG = {
 
     -- Ресеты
     IDLE_RESET       = 12,  -- сек. без единой собранной монеты -> ресет
+    -- v6.1.4: ресет по мешку. Если вместимость известна (событие сервера или
+    -- GUI игры «N/M»), ресет идёт ровно по «мешок полон», а этот лимит не
+    -- используется. Значение ниже — страховка для игр, где вместимость молчит.
     RESET_AT_COINS   = 40,  -- собрано монет за раунд -> ресет (0 = выключено)
     RESET_Y          = -50, -- ниже этой высоты персонаж считается упавшим
     FALL_CONFIRM     = 1.0, -- столько сек. ниже RESET_Y -> ресет (анти-ложные)
@@ -347,7 +406,7 @@ local flags = {
 local unlocked        = false
 local farmRunning     = false
 local movingToCoin    = false   -- фарм сейчас ведёт персонажа
-local speedValue      = 5       -- коэффициент (Smart ON) или студ/с (Smart OFF)
+local speedValue      = 5       -- v6.1.6: 1..50 = скорость (10..80 ст/с), см. baseSpeed()
 
 -- v6.1: стоп-в-лобби удалён целиком, цели-«круги» остались
 local failedUntil      = {}     -- цель -> время, до которого её не берём
@@ -377,6 +436,15 @@ local loggedCurrency = nil  -- способ распознавания, уже �
 local lastDump      = 0
 local targetLogged  = false -- первая цель раунда уже выведена в лог
 local farLoggedAt   = 0     -- v6.1.3: троттлинг строки «лечу к ближайшей»
+local farHoldLoggedAt = 0   -- v6.1.4: троттлинг строки «жду карту»
+local farHoldDist     = 0   -- v6.1.4: дистанция, из-за которой стоим (0 = не ждём)
+local farHoldSince    = nil -- v6.1.4: с какого времени ждём
+local farHoldWarned   = false -- v6.1.5: подробная диагностика «нас не переносят» уже выведена
+-- v6.1.5: РЕЖИМ «ЖДЁМ КАРТУ». Пока он включён, бот НЕ ТРОГАЕТ персонажа вообще:
+-- noclip выключен, PlatformStand выключен, CFrame не пишется. В 6.1.4 стояние
+-- держалось записью CFrame (holdStill), и эти же записи отменяли перенос на
+-- карту, который делает игра: персонаж оставался в лобби и «замирал».
+local lobbyHold       = false
 local currencyMode  = nil   -- чем валюта найдена: CoinID / теги / имя / вручную
 
 -- v5.9: счёт по факту. Либо событие сервера CoinCollected (самый точный
@@ -385,6 +453,10 @@ local coinEventBound = false  -- найден RemoteEvent валюты
 local bagCount       = 0      -- сколько валюты сервер реально выдал
 local bagBaseline    = nil    -- предыдущее значение счётчика сервера
 local bagCapacity    = nil    -- вместимость мешка (если сервер сообщил)
+local bagCapSource   = nil    -- v6.1.4: откуда вместимость: "event" | "gui"
+local bagGuiNext     = 0      -- v6.1.4: когда снова читать мешок из GUI
+local bagGuiCapSeen  = nil    -- v6.1.4: последняя вместимость из GUI (для проверки)
+local bagGuiCapHits  = 0      -- v6.1.4: сколько раз подряд она подтвердилась
 local missStreak     = 0      -- сколько целей подряд не подобралось
 
 -- Диагностика движения
@@ -398,7 +470,7 @@ local dbgNextAt  = 0              -- троттлинг обновления с�
 -- нужно уже из поиска валюты, поэтому объявляем всё здесь.
 -- v6.1.2: метка сборки. Печатается в лог окна при запуске — по ней видно,
 -- что в исполнителе крутится ИМЕННО эта сборка, а не старая копия файла.
-local BUILD = "6.1.3"
+local BUILD = "6.1.6"
 
 local LOG_MAX    = 6
 local logLines   = {}
@@ -499,19 +571,30 @@ local function flightGoal(coin, hipOffset)
     return Vector3.new(coin.Position.X, coin.Position.Y + CONFIG.PICKUP_LIFT, coin.Position.Z)
 end
 
+-- v6.1.6: СЛАЙДЕР = РЕАЛЬНАЯ СКОРОСТЬ. Раньше значение слайдера было МНОЖИТЕЛЕМ
+-- к «умной» базе (SMART_BASE = 5 * 0.6..3), и всё, что выше 10, упиралось в
+-- SPEED_CAP = 30: слайдеры 20 и 50 давали ровно одно и то же, а видимая разница
+-- была только на 1..7. Теперь шкала линейная: 1 -> SPEED_LO (10 ст/с),
+-- 50 -> SPEED_HI (80 ст/с), то есть +1.43 ст/с на каждый шаг слайдера.
+local function baseSpeed()
+    local v = math.clamp(speedValue, CONFIG.SPEED_MIN, CONFIG.SPEED_MAX)
+    local t = (v - CONFIG.SPEED_MIN) / math.max(CONFIG.SPEED_MAX - CONFIG.SPEED_MIN, 1)
+    return CONFIG.SPEED_LO + t * (CONFIG.SPEED_HI - CONFIG.SPEED_LO)
+end
+
 local function getEffectiveSpeed(dist)
+    local base = baseSpeed()
     if not flags.smartSpeed then
-        return math.clamp(speedValue, 0, CONFIG.SPEED_CAP)
+        -- Smart OFF: слайдер и есть скорость (ст/с), без ускорения у цели.
+        return math.clamp(base, 0, CONFIG.SPEED_CAP)
     end
 
-    -- Чем ближе цель, тем больше множитель (0.6 ... 3).
+    -- Smart ON: у самой цели +до SMART_BOOST (1.5x), дальше SMART_REF_DIST —
+    -- ровно базовая скорость. Множитель больше НЕ зависит от слайдера, поэтому
+    -- он не «съедает» разницу между соседними значениями.
     local d      = math.max(dist, 1)
-    local factor = math.clamp(CONFIG.SMART_REF_DIST / d,
-        CONFIG.SMART_FACTOR_MIN, CONFIG.SMART_FACTOR_MAX)
-
-    local smart = CONFIG.SMART_BASE * factor
-    local coeff = speedValue > 0 and speedValue or 1
-    return math.clamp(smart * coeff, CONFIG.MIN_FARM_SPEED, CONFIG.SPEED_CAP)
+    local factor = math.clamp(CONFIG.SMART_REF_DIST / d, 1, CONFIG.SMART_BOOST)
+    return math.clamp(base * factor, CONFIG.SPEED_LO, CONFIG.SPEED_CAP)
 end
 
 --========================================================
@@ -703,13 +786,13 @@ end)
 
 -- v6.1: памятка — коротко, без F9.
 make("TextLabel", {
-    Size = UDim2.new(1, 0, 0, 108), Position = UDim2.new(0, 0, 0, 268), BackgroundTransparency = 1,
+    Size = UDim2.new(1, 0, 0, 124), Position = UDim2.new(0, 0, 0, 268), BackgroundTransparency = 1,
     Text = "Валюта: CoinID / теги с «coin» / имя с «coin» (Coin, Coin_Server, CoinVisual). "
         .. "Декор (ручки, двери, вёдра) отсекается. Не нашлась — смотри лог.\n"
-        .. "Счёт по факту: часть исчезла или пришло CoinCollected.\n"
-        .. "Полёт по прямой: высота от пола ПОД монетой, цель не меняется на ходу.\n"
-        .. "Толпа: монета с ботами рядом не запрещена, просто дороже в выборе; "
-        .. "раз в 30-45 c бот уходит к случайной монете.",
+        .. "Счёт по факту: часть исчезла или пришло CoinCollected; мешок полон — ресет.\n"
+        .. "Полёт по прямой (3D-вектор): высота от пола ПОД монетой, цель не меняется.\n"
+        .. "Лобби: монета дальше 1500 ст и в раунде 0 собрано — стоим и ждём карту.\n"
+        .. "Толпа: монета с ботами рядом не запрещена, только дороже; раз в 30-45 c — уход.",
     TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, Font = Enum.Font.Gotham, TextSize = 10,
     TextColor3 = COLORS.dim, Parent = farmPage,
 })
@@ -726,7 +809,7 @@ createToggle(settingsPage, "avoidCrowd", "Избегать толпы",        1
 -- а просто получает штраф при выборе; раз в 30..45 c бот уходит к случайной.
 local sliderLabel = make("TextLabel", {
     Size = UDim2.new(1, 0, 0, 18), Position = UDim2.new(0, 0, 0, 196), BackgroundTransparency = 1,
-    Text = "Speed: 5", Font = Enum.Font.GothamMedium, TextSize = 13, TextColor3 = COLORS.dim,
+    Text = "Speed: 5 (16 ст/с)", Font = Enum.Font.GothamMedium, TextSize = 13, TextColor3 = COLORS.dim,
     TextXAlignment = Enum.TextXAlignment.Left, Parent = settingsPage,
 })
 
@@ -748,7 +831,7 @@ local speedInput = make("TextBox", {
 
 make("TextLabel", {
     Size = UDim2.new(1, 0, 0, 32), Position = UDim2.new(0, 0, 0, 274), BackgroundTransparency = 1,
-    Text = "Smart Speed: 1 = без ускорения, больше = быстрее.\nSmart OFF: значение = студов/сек.",
+    Text = "Speed 1-50 = 10..80 ст/с (шаг ≈1.4).\nSmart Speed: у цели +до 50%.",
     TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, Font = Enum.Font.Gotham, TextSize = 11,
     TextColor3 = COLORS.dim, Parent = settingsPage,
 })
@@ -764,7 +847,8 @@ function updateStatus()
 
     -- v6.0: точки спавна больше нет, в статусе только счёт по факту (мешок)
     local extra = ""
-    if coinEventBound then
+    -- v6.1.4: показываем мешок и без события, если вместимость известна из GUI
+    if coinEventBound or bagCapacity then
         extra = extra .. (" | мешок:%d%s"):format(bagCount,
             bagCapacity and ("/" .. tostring(bagCapacity)) or "")
     end
@@ -821,7 +905,7 @@ local function updateSpeedVisuals()
     local percent = (speedValue - CONFIG.SPEED_MIN) / (CONFIG.SPEED_MAX - CONFIG.SPEED_MIN)
     percent = math.clamp(percent, 0, 1)
     sliderKnob.Position = UDim2.new(percent, -8, 0.5, -8)
-    sliderLabel.Text = "Speed: " .. tostring(speedValue)
+    sliderLabel.Text = ("Speed: %d (%d ст/с)"):format(speedValue, math.floor(baseSpeed() + 0.5))
     if not speedInput:IsFocused() then
         speedInput.Text = tostring(speedValue)
     end
@@ -937,6 +1021,10 @@ end
 -- скрипт ведёт персонажа (фарм идёт / включён Fly / летим к цели). Когда всё
 -- стоит, коллизии возвращаются — иначе персонаж проседал бы сквозь пол в лобби.
 local function noclipWanted()
+    -- v6.1.5: в режиме «ждём карту» noclip ВЫКЛЮЧЕН. Иначе персонаж висит без
+    -- коллизий и его приходится удерживать записью CFrame — а эти записи отменяют
+    -- перенос на карту, который делает игра (бот «замирал» в лобби).
+    if lobbyHold then return false end
     return farmRunning or flags.fly or movingToCoin
 end
 
@@ -981,7 +1069,11 @@ local function maintain()
     -- подпирать, поэтому пол и потолок проходятся одинаково.
     local hum = getHumanoid()
     if hum then
-        if want then
+        -- v6.1.5: PlatformStand нужен ТОЛЬКО когда мы сами ведём персонажа.
+        -- В режиме «ждём карту» гуманоид обычный: иначе игра не может двигать
+        -- персонажа своими средствами (Humanoid:MoveTo при PlatformStand не работает).
+        local guiding = (movingToCoin or flags.fly) and not lobbyHold
+        if guiding then
             if not hum.PlatformStand then hum.PlatformStand = true end
             if hum.AutoRotate then hum.AutoRotate = false end
         else
@@ -1183,6 +1275,10 @@ local function onCharacterSpawn(char)
     currencyMode   = nil
     loggedCurrency = nil
     targetLogged   = false
+    farHoldSince   = nil   -- v6.1.4: новое ожидание «мы не на карте» с нуля
+    farHoldWarned  = false -- v6.1.5
+    lobbyHold      = false -- v6.1.5: в новом раунде снова трогаем персонажа смело
+    farHoldLoggedAt = 0
     coinNextScan   = 0    -- сразу пересканируем карту
     missStreak     = 0
     moveMode       = "cframe"
@@ -1724,7 +1820,10 @@ local function bindCoinEvents()
             end
 
             bagCount = count
-            if type(capacity) == "number" and capacity > 0 then bagCapacity = capacity end
+            if type(capacity) == "number" and capacity > 0 then
+                bagCapacity  = capacity
+                bagCapSource = "event"   -- v6.1.4: сервер главнее GUI
+            end
             if farmRunning then updateStatus() end
         end)
         print("[Cosmic] счёт валюты по событию сервера: " .. ev:GetFullName())
@@ -1736,11 +1835,66 @@ local function bindCoinEvents()
             bagBaseline = 0
             bagCount    = 0
             bagCapacity = nil
+            bagCapSource = nil   -- v6.1.4: в новом раунде вместимость узнаём заново
             roundCoins  = 0
             missStreak  = 0
             if farmRunning then updateStatus() end
         end)
         print("[Cosmic] новый раунд валюты: " .. started:GetFullName())
+    end
+end
+
+--========================================================
+-- v6.1.4: МЕШОК ИЗ GUI ИГРЫ («40/50»).
+-- Сервер не во всех сезонах присылает вместимость мешка третьим аргументом
+-- CoinCollected. Из-за этого ресет упирался в хардкод RESET_AT_COINS = 40,
+-- хотя в сезоне 50 мест: бот перерождался, не набрав полный мешок.
+-- Ищем в PlayerGui текст РОВНО вида «N/M» (наш статус — одна длинная строка
+-- «running | +40 | вал:36 ...», под шаблон не подходит) и берём его как
+-- текущий счёт и вместимость.
+--========================================================
+local function readBagGui()
+    local ok, res = pcall(function()
+        local found
+        for _, d in ipairs(PlayerGui:GetDescendants()) do
+            local txt = (d:IsA("TextLabel") or d:IsA("TextButton")) and d.Text or nil
+            if txt and #txt <= 12 then
+                local a, b = txt:match("^%s*(%d+)%s*/%s*(%d+)%s*$")
+                if a and b then
+                    local n, cap = tonumber(a), tonumber(b)
+                    -- 5..200 мест: отсекаем таймеры «1/3» и прочие счётчики
+                    if n and cap and cap >= 5 and cap <= 200 and n <= cap then
+                        found = { count = n, cap = cap }
+                    end
+                end
+            end
+        end
+        return found
+    end)
+    return ok and res or nil
+end
+
+-- Раз в секунду. Счёт из GUI берём только если события сервера нет (событие
+-- точнее), а вместимость — если её не сообщил сервер и она подтвердилась два
+-- чтения подряд (защита от чужого счётчика вида «3/12» в чужом GUI).
+local function pollBagGui()
+    if os.clock() < bagGuiNext then return end
+    bagGuiNext = os.clock() + 1
+    local info = readBagGui()
+    if not info then return end
+
+    if info.cap == bagGuiCapSeen then
+        bagGuiCapHits += 1
+    else
+        bagGuiCapSeen, bagGuiCapHits = info.cap, 1
+    end
+    if bagCapSource ~= "event" and bagGuiCapHits >= 2 then
+        bagCapacity, bagCapSource = info.cap, "gui"
+    end
+
+    if not coinEventBound and info.count ~= bagCount then
+        bagCount = info.count
+        if farmRunning then updateStatus() end
     end
 end
 
@@ -1803,7 +1957,9 @@ local function confirmPickup(coin, goalYArg)
         local dx    = to.X - r.Position.X
         local dz    = to.Z - r.Position.Z
         local dist  = math.sqrt(dx * dx + dz * dz)
-        local spd   = math.max(getEffectiveSpeed(dist), CONFIG.MIN_FARM_SPEED)
+        -- v6.1.6: getEffectiveSpeed уже не бывает ниже SPEED_LO (10 ст/с) —
+        -- отдельная «нижняя граница» MIN_FARM_SPEED больше не нужна.
+        local spd   = getEffectiveSpeed(dist)
         local step  = math.min(spd * dt, CONFIG.MAX_FRAME_MOVE)
         local alpha = dist > 1e-3 and math.clamp(step / dist, 0, 1) or 0
 
@@ -1908,7 +2064,10 @@ local function farmIteration()
     -- v6.1: раз в 30..45 c уходим к СЛУЧАЙНОЙ монете (из самых свободных),
     -- чтобы куча ботов не липла к одной. Таймер не сбрасывается при неудаче:
     -- иначе при пустой карте он бы дёргался каждый кадр.
-    if flags.avoidCrowd and os.clock() >= wanderNextAt then
+    if flags.avoidCrowd and os.clock() >= wanderNextAt
+        and not (roundCoins == 0 and nearestCoinDist > CONFIG.FAR_HOLD_DIST) then
+        -- v6.1.5: в лобби «уход от толпы» не нужен — он только подставлял дальнюю
+        -- монету и раньше сбивал ожидание («ухожу от толпы» прямо перед полётом).
         wanderNextAt = os.clock() + CONFIG.CROWD_WANDER_MIN
             + math.random() * (CONFIG.CROWD_WANDER_MAX - CONFIG.CROWD_WANDER_MIN)
         wanderTarget = randomCoin(root.Position)
@@ -1929,6 +2088,51 @@ local function farmIteration()
         local nearest, far = findNearestCoin(root.Position)
         currentTarget = wanderTarget or nearest
         wanderTarget  = nil
+
+        -- v6.1.4: СЛИШКОМ ДАЛЕКО = МЫ НЕ НА КАРТЕ. Пока в раунде не собрано ни
+        -- одной монеты, а ближайшая дальше FAR_HOLD_DIST, лететь бессмысленно:
+        -- игру устраивает только её собственный перенос на карту, а полёт из
+        -- лобби его ломает (персонаж оставался в лобби и ехал за 8000 студов).
+        -- v6.1.5: ТАЙМАУТА БОЛЬШЕ НЕТ. В 6.1.4 через FAR_HOLD_MAX секунд бот всё
+        -- равно летел — ровно это видно в логе («лечу к ближайшей (Coin_Server,
+        -- 8866 ст)»), и персонаж так и оставался в лобби. Ждём без ограничения:
+        -- уедем из лобби — испортим весь раунд, постоим — просто потеряем время.
+        farHoldDist = 0
+        if currentTarget and CONFIG.FAR_HOLD_DIST > 0 and roundCoins == 0 then
+            local d = (currentTarget.Position - root.Position).Magnitude
+            if d > CONFIG.FAR_HOLD_DIST then
+                if not farHoldSince then
+                    farHoldSince  = os.clock()
+                    farHoldWarned = false
+                end
+                farHoldDist   = d
+                currentTarget = nil
+                wanderTarget  = nil
+                if os.clock() - farHoldLoggedAt > 15 then
+                    farHoldLoggedAt = os.clock()
+                    -- v6.1.5: в логе видно ВСЁ, что нужно для разбора: где стоим,
+                    -- сколько монет в мире, заякорен ли персонаж игрой.
+                    addLog(("жду карту: монета %.0f ст > %d | я (%.0f, %.0f, %.0f) | монет %d | заякорен: %s")
+                        :format(d, CONFIG.FAR_HOLD_DIST, root.Position.X, root.Position.Y,
+                            root.Position.Z, currencyCount, tostring(root.Anchored)))
+                end
+                if not farHoldWarned and os.clock() - farHoldSince > CONFIG.FAR_HOLD_MAX then
+                    farHoldWarned = true
+                    addLog(("не переносят на карту %.0f c — стою и не трогаю персонажа "
+                        .. "(лечу, только когда монета ближе %d ст)")
+                        :format(os.clock() - farHoldSince, CONFIG.FAR_HOLD_DIST))
+                    addLog("если так весь раунд — Stop и Run farm (или FAR_HOLD_DIST = 0)")
+                end
+            else
+                farHoldSince = nil
+            end
+        else
+            farHoldSince = nil
+        end
+        -- v6.1.5: пока в раунде не собрано ни одной монеты и цели нет — стоим
+        -- ПАССИВНО (без noclip, PlatformStand и записи CFrame), чтобы не мешать
+        -- игре перенести персонажа на карту.
+        lobbyHold = (roundCoins == 0 and currentTarget == nil)
         if currentTarget and far then
             -- Строка в лог — не чаще раза в 10 c: иначе она забьёт окно.
             if os.clock() - farLoggedAt > 10 then
@@ -1949,12 +2153,26 @@ local function farmIteration()
         -- v6.1.3: пишем, ЧЕГО не хватает. Пустой кэш = карта ещё не загружена
         -- (межраундье), это нормальное ожидание. Непустой кэш при пустом
         -- результате = все монеты в чёрном списке (их только что не забрали).
-        idleReason   = currencyCount > 0
-            and ("валюта не найдена (в кэше %d, все в чёрном списке)"):format(currencyCount)
-            or "валюта не найдена (в workspace нет монет — жду раунд)"
+        if farHoldDist > 0 then
+            -- v6.1.5: причина простоя — «мы не на карте» + сколько уже ждём
+            idleReason = ("жду карту: %.0f ст, %.0f c"):format(
+                farHoldDist, farHoldSince and (os.clock() - farHoldSince) or 0)
+        elseif currencyCount > 0 then
+            idleReason = ("валюта не найдена (в кэше %d, все в чёрном списке)")
+                :format(currencyCount)
+        else
+            idleReason = "жду карту (в workspace нет монет — межраундье)"
+        end
         dbgText      = ""
         lastProgress = os.clock()
-        holdStill(0.3)   -- v6.0: ждём, не давая персонажу просесть вниз
+        if lobbyHold then
+            -- v6.1.5: ПАССИВНОЕ ожидание. Раньше здесь стоял holdStill(0.3),
+            -- который каждый кадр возвращал корень на место — и перенос на карту,
+            -- сделанный игрой, тут же отменялся: бот «замирал» в лобби.
+            task.wait(0.3)
+        else
+            holdStill(0.3)   -- v6.0: ждём, не давая персонажу просесть вниз
+        end
         return
     end
 
@@ -1990,6 +2208,16 @@ local function farmIteration()
         if not r then break end
 
         local dt = math.clamp(task.wait(), 0, 0.05)
+
+        -- v6.1.4: ЗА ПАУЗУ цель могла обнулиться. Обработчик CoinCollected при
+        -- старте нового раунда пишет currentTarget = nil, а корень пропадает при
+        -- респавне. Без проверки кадр падал с «:2026: attempt to index nil with
+        -- 'Position'» и цикл обрывался посреди полёта (movingToCoin оставался
+        -- true, Noclip не выключался).
+        if not currentTarget or not currentTarget.Parent then break end
+        local rNow = getRoot()
+        if not rNow then break end
+        r = rNow
 
         -- v6.1: пересмотр цели РЕДКО (1.5 c) и только при явном выигрыше
         -- (>= RETARGET_ADVANTAGE студов). Раньше 0.35 c + 25% заворачивали бота
@@ -2045,15 +2273,21 @@ local function farmIteration()
         if distXZ <= CONFIG.STOP_DIST and math.abs(dy) <= CONFIG.STOP_DIST then
             -- v5.9: НЕ «долетел = засчитал». Держимся над валютой и ждём,
             -- пока игра реально её заберёт (исчезла / Collected / CoinCollected).
-            reached = confirmPickup(currentTarget, goal.Y)
+            -- v6.1.4: confirmPickup внутри делает паузы, поэтому за это время
+            -- цель могла обнулиться обработчиком валюты (новый раунд). Держим её
+            -- локально, иначе markFailed(nil) ронял кадр.
+            local target = currentTarget
+            reached = confirmPickup(target, goal.Y)
             if reached then
                 missStreak  = 0
                 lastProgress = os.clock()
-            else
+            elseif target then
                 missStreak += 1
-                markFailed(currentTarget)   -- декор / сервер не выдал: не кружимся
-                addLog(("не забрали %s за %.1f c — в чёрный список")
-                    :format(tostring(currentTarget.Name), CONFIG.TOUCH_TIMEOUT))
+                markFailed(target)   -- декор / сервер не выдал: не кружимся
+                addLog((("не забрали %s за %.1f c — в чёрный список"):format(
+                    tostring(target.Name), CONFIG.TOUCH_TIMEOUT))
+                    .. (type(firetouchinterest) == "function" and ""
+                        or " | нет firetouchinterest: подбор только касанием"))
                 if missStreak >= 5 then
                     missStreak  = 0
                     failedUntil = {}
@@ -2063,10 +2297,16 @@ local function farmIteration()
             break
         end
 
-        local spd   = getEffectiveSpeed(distXZ)
+        -- v6.1.4: SMART SPEED ПО ВЕКТОРУ. Множитель считается по длине 3D-пути
+        -- (dist3), а не по горизонтальной проекции: при полёте наискосок/вверх
+        -- скорость больше не зависит от того, что «по земле близко, а по высоте
+        -- далеко». Шаг идёт по единичному 3D-вектору, значит скорость постоянна
+        -- вдоль всей прямой (без «сначала вперёд, потом вверх»).
+        local spd   = getEffectiveSpeed(dist3)
         -- v6.1.3: дальний перелёт (лобби -> карта). Обычная скорость фарма
-        -- (<= SPEED_CAP = 30 ст/с) превращала 2000 студов в минуту стояния на
-        -- месте. FLY_SPEED уже проверен ручным полётом — берём его.
+        -- (SPEED_LO..SPEED_HI = 10..80 ст/с) превращала 2000 студов в минуту
+        -- стояния на месте. FLY_SPEED уже проверен ручным полётом — берём его
+        -- как МИНИМУМ, то есть слайдер выше 70 продолжает работать.
         if dist3 > CONFIG.FAR_DIST then
             spd = math.max(spd, CONFIG.FLY_SPEED)
         end
@@ -2158,10 +2398,20 @@ local function farmIteration()
     end
 
     -- Авто-ресет по количеству собранных за раунд монет
-    if reached and flags.autoReset
-        and CONFIG.RESET_AT_COINS > 0
-        and roundCoins >= CONFIG.RESET_AT_COINS then
-        respawnNow()
+    -- Авто-ресет по мешку (v6.1.4). Вместимость берём из события сервера или из
+    -- GUI игры, поэтому ресет срабатывает ровно на «мешок полон» (50/50 в
+    -- обычном сезоне, 40/40 в ивенте) — RESET_AT_COINS только страховка для игр,
+    -- где вместимость нигде не сообщается.
+    if reached and flags.autoReset then
+        local haveCap = bagCapacity and bagCapacity > 0
+        local full    = haveCap and bagCount >= bagCapacity
+        if full or (not haveCap and CONFIG.RESET_AT_COINS > 0
+            and roundCoins >= CONFIG.RESET_AT_COINS) then
+            addLog(full
+                and ("мешок полон %d/%d — ресет"):format(bagCount, bagCapacity)
+                or ("%d монет за раунд — ресет"):format(roundCoins))
+            respawnNow()
+        end
     end
 end
 
@@ -2190,6 +2440,7 @@ local function selfCheck()
     { "coinFloorY",         coinFloorY         },
     { "flightGoal",         flightGoal         },
     { "getEffectiveSpeed",  getEffectiveSpeed  },
+    { "baseSpeed",          baseSpeed          },
     { "respawnNow",         respawnNow         },
     { "onCharacterSpawn",   onCharacterSpawn   },
     { "markVisited",        markVisited        },
@@ -2273,6 +2524,10 @@ function farmStart()
     coinNextScan  = 0
     failedUntil   = {}   -- чистый чёрный список недостижимых целей
     missStreak    = 0    -- счётчик «не подобралось подряд» сбрасываем
+    farHoldSince  = nil  -- v6.1.4: ожидание «мы в лобби» начинается заново
+    farHoldWarned = false
+    farHoldLoggedAt = 0
+    lobbyHold     = false -- v6.1.5: noclip/PlatformStand снова наши
 
     runBtn.Text = "Stop farm"
     runBtn.BackgroundColor3 = COLORS.accent2
@@ -2286,6 +2541,9 @@ function farmStop()
     movingToCoin  = false
     wanderTarget  = nil
     moveMode      = "cframe"
+    lobbyHold     = false   -- v6.1.5: вернуть персонажу обычное управление/noclip
+    farHoldSince  = nil
+    farHoldWarned = false
     idleReason    = "остановлен"
     dbgText       = ""
     runBtn.Text = "Run farm"
@@ -2328,6 +2586,7 @@ end)
 task.spawn(function()
     while true do
         task.wait(0.5)
+        pollBagGui()          -- v6.1.4: «мешок N/M» из GUI игры (раз в секунду)
         if farmRunning then updateStatus() end
     end
 end)
@@ -2367,6 +2626,10 @@ task.spawn(function()
     local _, checkMsg = selfCheck()   -- v6.1.2: проверка целостности сборки
     addLog(("v%s загружен — введи пароль"):format(BUILD))
     addLog(checkMsg)
+    -- v6.1.4: сразу видно, чем бот подбирает валюту и знает ли он размер мешка.
+    addLog(("подбор: %s | мешок: %s"):format(
+        type(firetouchinterest) == "function" and "firetouchinterest" or "касанием",
+        bagCapacity and ("0/" .. tostring(bagCapacity)) or "размер неизвестен"))
 
     main.Visible = true
     main.Size = UDim2.new(0, 0, 0, 0)

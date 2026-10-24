@@ -1,0 +1,2172 @@
+    --[[
+        Cosmic UI — Autofarm v6.1 (MM2)
+
+        ГЛАВНОЕ В v6.1 (правки поверх v6.0):
+
+        A) ВАЛЮТА ИЩЕТСЯ УНИВЕРСАЛЬНО — ПО СЛОВУ "coin" В ИМЕНИ.
+            • точные признаки игры (как было): атрибут CoinID, теги
+            CollectionService со словом coin, ручные CONFIG.CURRENCY_NAME /
+            CURRENCY_EXTRA;
+            • плюс ЛЮБАЯ ИНТЕРАКТИВНАЯ часть (TouchTransmitter / ClickDetector /
+            ProximityPrompt), в имени которой есть "coin": Coin, Coin_Server,
+            CoinVisual, CoinPart, ServerCoinPart — это и есть семейство MM2;
+            • ЯВНЫЙ ЧЁРНЫЙ СПИСОК ДЕКОРА: handle, door, knob, bucket, basket,
+            lamp, sign, valve, crate, fence... — именно из-за их отсутствия
+            бот летал на oct_handle (ручки дверей) и вёдра конфет;
+            • авто-определение "много одинаковых мелких частей" УДАЛЕНО: это
+            оно и выбирало ручки/вёдра вместо валюты.
+
+        B) F9 БОЛЬШЕ НЕ НУЖЕН. На вкладке Farm под кнопками есть ЛОГ (6 строк)
+            и кнопка Copy. Туда пишется: каким признаком найдена валюта, сколько
+            её видно, к чему летим, что забрали и почему стоим.
+
+        C) ПОЧЕМУ ПОСЛЕ РАУНДА БЫЛО "ВАЛЮТА НЕ НАЙДЕНА", А БОТ СТОЯЛ.
+            Старый фильтр толпы ВЫБРАСЫВАЛ цель, если к ней был ближе другой
+            игрок. На полном сервере ботов так выкидывались ВСЕ монеты: счётчик
+            валюты на карте не ноль, а цель не находится. Теперь толпа — это
+            ШТРАФ к дистанции при выборе цели, а не запрет: цель есть всегда.
+            Плюс раз в 30..45 c бот сам уходит к случайной монете (из наименее
+            людных), чтобы куча ботов не липла к одной.
+
+        D) NOCLIP ПРОБИВАЕТ И ПОЛ. Потолок бот проходил и раньше (коллизий нет),
+            а пол его "держал" не коллизией, а сам Humanoid: он подпирал корень
+            на HipHeight. Пока скрипт ведёт персонажа, ставится
+            PlatformStand = true — гуманоид перестаёт подпирать, и бот проходит
+            пол так же, как потолок. Это же убирает "огибание" препятствий:
+            запись CFrame больше не отменяется физикой.
+
+        E) ПОЛЁТ СТАЛ ПРЯМЕЕ. Перевыбор цели раз в 0.35 c (новая монета ближе на
+            25%) постоянно заворачивал бота в сторону — со стороны это выглядело
+            как объезд препятствий. Теперь цель фиксируется на весь заход, а
+            пересмотр — раз в 1.5 c и только если новая цель ближе на 15 студов.
+
+        F) "СТОП В ЛОББИ" УДАЛЁН ПОЛНОСТЬЮ: нет кнопки, флага, функций
+            enterLobby/leaveLobby и всей механики roundOver. Вместе с ней ушла
+            и детекция надписи Intermission (она тоже ложно останавливала фарм).
+            Новый раунд определяется по респавну персонажа и по счётчику валюты
+            сервера.
+
+        G) ВКЛАДКА НАСТРОЕК НАЗЫВАЕТСЯ Settings (в коде и в окне одинаково).
+
+        ГЛАВНОЕ В v6.0 (осталось в силе):
+
+        B) AUTO RESET СНОВА РАБОТАЕТ. Раньше при ALLOW_SELF_RESET = false он
+            вместо ресета пытался «перенести на точку спавна», а без точки
+            спавна не делал НИЧЕГО (только писал подсказку в F9). Теперь, как в
+            v5.7: персонаж перерождается (Health = 0 + Dead), счётчики и цель
+            сбрасываются, выдаётся льгота SPAWN_GRACE. Прогресс для IDLE_RESET
+            считается по 3D-дистанции, поэтому долгий подъём к валюте больше
+            не выглядит как простой.
+
+        C) ПОЛЁТ: ПРЯМАЯ ЛИНИЯ, БЕЗ «ГОРБА» ПОСЛЕ МОНЕТЫ.
+            • Раньше высота бралась от пола ПОД ПЕРСОНАЖЕМ (пересчёт раз в 0.2 c),
+            поэтому пролетая над столом/лавкой/монетой бот поднимался на ~3
+            студа и потом опускался — это и был «горб» между монетами.
+            • Теперь высота считается ОТ ПОЛА ПОД САМОЙ ВАЛЮТОЙ (coinFloorY) и на
+            весь полёт к этой валюте не меняется. Валюта в воздухе (пола нет
+            или она выше пола на FLOOR_TOLERANCE) — ведём прямо к ней.
+            • Движение — по 3D-прямой к точке над валютой: вертикаль
+            распределена по всему пути, а не «сначала по X, потом по Y».
+            • Высота корня берётся из Humanoid.HipHeight + половина корня (≈3),
+            а не из замера под персонажем — она больше не «прыгает».
+
+        ЧТО БЫЛО В v5.9: ЛЕТАЕМ ТОЛЬКО К ВАЛЮТЕ И СЧИТАЕМ ТОЛЬКО ТО, ЧТО ВЗЯЛИ.
+
+        1) ВАЛЮТА ОПРЕДЕЛЯЕТСЯ ПО ПРИЗНАКАМ ИГРЫ (в v6.1 — ещё и по слову coin):
+            • атрибут CoinID у подбираемой части (в MM2 это Coin_Server
+                с CoinID = "Candy"). Это точный признак — имя не важно;
+            • теги CollectionService со словом coin (ServerCoinPart, CoinVisual);
+            • имя части содержит "coin" (Coin, Coin_Server, CoinVisual,
+                ServerCoinPart, CandyCoin) — при условии, что часть подбираемая;
+            • CONFIG.CURRENCY_NAME / CURRENCY_EXTRA — если в игре валюта
+                зовётся совсем иначе (например "Candy" без CoinID и тегов).
+            Чёрный список декора (CONFIG.CURRENCY_DENY) отсекает ручки, двери,
+            вёдра, лампы и прочее, даже если в их имени есть "coin".
+            Авто-определение "много одинаковых частей" УДАЛЕНО (ловило декор).
+
+        2) СЧЁТ ПО ФАКТУ, А НЕ «ДОЛЕТЕЛ — ЗАСЧИТАЛ».
+            Летим так же плавно, как v5.8 (тот же шаг CFrame каждый кадр,
+            без телепортов и без рывков RenderStepped). Но, дойдя до валюты,
+            бот ДЕРЖИТСЯ над ней и ждёт, пока игра реально её заберёт:
+            • часть исчезла / атрибут Collected / CoinVisual.Collected;
+            • либо пришло событие сервера CoinCollected (если такой
+                RemoteEvent есть — счёт ведётся прямо по нему, это точнее всего).
+            Ничего не забралось за TOUCH_TIMEOUT — это декор: НЕ засчитываем,
+            цель уходит в чёрный список на FAIL_BLACKLIST секунд (не кружимся).
+
+        3) NOCLIP БОЛЬШЕ НЕТ В НАСТРОЙКАХ: он включается САМ, как только
+            фарм/полёт начинают вести персонажа, и выключается, когда всё
+            стоит (иначе персонаж проваливался бы в лобби).
+
+        4) МАРШРУТ ПО ТОЧКАМ УДАЛЁН ПОЛНОСТЬЮ: кнопки, настройки маршрута и весь код.
+
+        Ядро фарма — v5.6/v5.8: COIN_RANGE 350, noclip в RunService.Stepped,
+        CFrame + velocity-fallback, скорости, супервизор в pcall, стоп в лобби.
+        Высота полёта — v6.0 (от пола под валютой, движение по 3D-прямой).
+
+        ЧТО ОСТАЛОСЬ ИЗ v5.8:
+            • АНТИ-КРУГИ — FAIL_BLACKLIST (20 c недостижимую цель не берём);
+            • стоп в лобби по Intermission/смерти + Auto Start.
+
+        ВАЖНО (v6.0): точек спавна и лобби больше нет. Никаких «Спавн здесь»,
+        «Лобби здесь», «Держаться спавна», «Перенос на спавн» — и в F9, и в
+        CONFIG этих настроек тоже нет.
+
+        ГЛАВНОЕ В v5.6 (лобби):
+        7) СТОП В ЛОББИ. По окончании раунда фарм встаёт и бот больше НЕ летает
+            по лобби. Раньше в лобби он продолжал искать/собирать валюту.
+            Признаки конца раунда (v6.0: только эти два):
+            • смерть персонажа (в MM2 до нового раунда собирать нечего);
+            • надпись Intermission в GUI (PlayerGui + CoreGui).
+            Пока стоп активен, Auto Start НЕ перезапускает фарм на респавне
+            (именно это и гнало бота по лобби). Возобновление: Intermission
+            пропал — тогда, если Auto Start включён, фарм стартует сам, иначе
+            ждёт кнопку Run.
+            При стопе выключается Fly и гасятся скорости, персонаж не висит
+            в воздухе. Тумблер "Стоп в лобби" на вкладке Farm отключает всё это.
+
+        ГЛАВНОЕ В v5.5 (почему "не летел" v5.4.1 — построчное сравнение с v5.3):
+        1) NOCLIP. В v5.3 коллизии персонажа выключались в RunService.Stepped,
+            то есть КАЖДЫЙ физический шаг, пока бот ведёт персонажа. В v5.4.1
+            это делал таймер раз в 0.2 c — физика успевала вернуть CanCollide,
+            персонаж упирался в стены/пол и не двигался. Теперь как в v5.3:
+            Stepped-хук (см. блок "NOCLIP: как в v5.3").
+        2) СУПЕРВИЗОР. В v5.4.1 pollRound() вызывался ВНЕ pcall: одна ошибка —
+            и поток фарма умирал навсегда, без сообщений (бот просто стоял).
+            Теперь каждый шаг в pcall и любая ошибка печатается.
+        3) СКОРОСТЬ. При Smart Speed = 1 множитель на дальней дистанции давал
+            ~3 студа/с (медленнее ходьбы). Добавлен CONFIG.MIN_FARM_SPEED = 10,
+            а слайдер по умолчанию стоит на 5 — это 15..30 студов/с, как в v5.2.
+        4) FALLBACK ДВИЖЕНИЯ. Если CFrame-запись персонажа не сдвигает (игра/
+            физика возвращает позицию), бот сам переключается на velocity-толчок
+            и пишет об этом в консоль.
+        5) ДИАГНОСТИКА. В окне вторая строка статуса показывает цель,
+            дистанцию, скорость, режим движения и ПРИЧИНУ простоя
+            ("валюта не найдена", "персонаж мёртв", "intermission" ...).
+            В консоль (F9) раз в 3 c: "[Cosmic][dbg] ... сдвиг=...".
+            Раньше причина простоя была не видна вообще.
+        6) ВЫСОТА (главная причина "стоит на месте" после v5.2). В v5.2 бот
+            ехал ПО ЗЕМЛЕ: Raycast вниз + hipOffset (корень = пол + ~3 студа).
+            В v5.3/v5.4 корень ведётся на "валюта.Y + 1", то есть на уровень
+            пола — тело уходит в пол по пояс, коллизии зажимают персонажа и он
+            не двигается. В v5.6..v5.9 высота бралась от пола ПОД ПЕРСОНАЖЕМ
+            (пересчёт раз в 0.2 c) — из-за этого бот приседал/подпрыгивал на
+            предметах. В v6.0 высота — от пола ПОД ВАЛЮТОЙ (см. coinFloorY),
+            а "догнал" считается по горизонтали. Валюта в воздухе (выше пола
+            на FLOOR_TOLERANCE) — летим прямо к ней.
+
+        ВАЖНО: если в статусе "валюта не найдена" — распознавание не сработало.
+        Смотрим ЛОГ на вкладке Farm (F9 не нужен): там строка "не найдено,
+        кандидаты: ..." с именами частей. Дальше либо добавляем слово в
+        CONFIG.CURRENCY_EXTRA, либо вписываем точное имя в CONFIG.CURRENCY_NAME.
+
+        ПРЕДЫДУЩЕЕ (v5.4.1):
+        - Ресет (смерть -> спавн) в начале раунда. Причина: таймер простоя
+            (IDLE_RESET = 12 c) обновлялся ТОЛЬКО когда бот собирал/догонял монету.
+            Теперь: старт раунда сбрасывает roundCoins/visited и выдаёт льготу
+            ROUND_GRACE, а при отсутствии монет таймер простоя тоже сбрасывается.
+        - ВАЛЮТА: ручное имя можно вписать: CONFIG.CURRENCY_NAME = "Candy".
+
+        ФУНКЦИИ: пароль, Run/Stop, Auto Start, Auto Reset (по монетам/простою/
+        падению — перерождает персонажа), Smart Speed + слайдер, Anti-AFK,
+        Anti-Fling, Fly, «Избегать толпы», лог на Farm, Ctrl — скрыть/показать меню.
+        Noclip включается сам (тумблера нет), точек спавна/лобби и стопа в лобби нет.
+    ]]
+
+    --========================================================
+    -- SERVICES
+    --========================================================
+    local Players          = game:GetService("Players")
+    local TweenService     = game:GetService("TweenService")
+    local RunService       = game:GetService("RunService")
+    local UserInputService = game:GetService("UserInputService")
+    local CollectionService = game:GetService("CollectionService")   -- v5.9: теги валюты
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")   -- v5.9: событие CoinCollected
+
+    local VirtualUser
+    pcall(function() VirtualUser = game:GetService("VirtualUser") end)
+
+    local LocalPlayer = Players.LocalPlayer
+    local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
+
+
+    --========================================================
+    -- CONFIG (значения v5.3, кроме помеченного)
+    --========================================================
+    local CONFIG = {
+        PASSWORD     = "salt",
+
+        -- Скорость
+        SPEED_MIN    = 1,
+        SPEED_MAX    = 50,
+        SPEED_CAP    = 30,      -- жёсткий потолок итоговой скорости
+        SMART_BASE   = 5,       -- база "умной скорости" (студов/сек)
+        SMART_REF_DIST   = 45,  -- на этой дистанции множитель = 1
+        SMART_FACTOR_MIN = 0.6,
+        SMART_FACTOR_MAX = 3,   -- ближе к цели -> быстрее
+        MAX_FRAME_MOVE   = 1.5, -- максимум студов за кадр (анти-"invalid position")
+        MIN_FARM_SPEED   = 10,  -- нижняя граница скорости фарма (Smart ON), чтобы бот реально ехал
+        FLY_SPEED    = 70,      -- скорость ручного полёта
+
+        -- Диагностика: состояние фарма дублируется в лог окна (вкладка Farm)
+        -- и, если доступна консоль, в неё — раз в DBG_INTERVAL сек.
+        DEBUG         = true,
+        DBG_INTERVAL  = 3,
+
+        -- Валюта (в ивентах MM2 это не монеты, а конфеты и т.п.)
+        COIN_RANGE   = 350,
+        STOP_DIST    = 2,       -- догнал = горизонталь <= этого (студов)
+        PICKUP_LIFT  = 1,       -- насколько корень выше центра висящей валюты
+        FLOOR_TOLERANCE = 2.5,  -- v6.0: валюта выше пола на столько = висит в воздухе
+        STUCK_LIMIT  = 1.0,     -- сек. без прогресса рядом с целью -> бросить цель
+        VISIT_COOLDOWN = 0.6,   -- не возвращаться к той же монете слишком часто
+
+        -- v6.1: ВАЛЮТА — УНИВЕРСАЛЬНО ПО СЛОВУ "coin" + точные признаки игры.
+        -- В MM2 подбираемая часть называется Coin_Server (невидимая, с Touch),
+        -- её ребёнок — CoinVisual, а на сервере она помечена атрибутом CoinID.
+        -- Поэтому принимаем ЛЮБОЕ из:
+        --   1) атрибут CoinID (значение любое, если CURRENCY_ID = nil);
+        --   2) тег CollectionService со словом coin (ServerCoinPart, CoinVisual);
+        --   3) имя части содержит "coin" (Coin, Coin_Server, CoinVisual, ...);
+        --   4) имена из CURRENCY_EXTRA / CURRENCY_NAME (если валюта зовётся иначе).
+        -- Всё, что похоже на декор (ручки, двери, вёдра, лампы), отсекается
+        -- CURRENCY_DENY — именно из-за их отсутствия бот летал на oct_handle и
+        -- вёдра конфет вместо валюты.
+        CURRENCY_ATTR = "CoinID",   -- имя атрибута валюты ("" = не проверять)
+        CURRENCY_ID   = nil,        -- ожидаемое значение ("Candy"); nil = любое
+        CURRENCY_WORD = "coin",     -- v6.1: слово валюты (Coin, Coin_Server, ...)
+        CURRENCY_TAGS = { "ServerCoinPart", "CoinVisual", "Coin", "Coins" },
+        CURRENCY_EXTRA = {},        -- v6.1: {"Candy", "Cash"} — если нет "coin"
+        CURRENCY_NAME  = nil,       -- точное имя объекта (крайний вариант)
+        CURRENCY_MAX_SIZE = 12,     -- объект крупнее (студов) валютой не считается
+        CURRENCY_BIG_SIZE = 6,      -- твёрдый объект крупнее этого — декор
+        CURRENCY_DENY = {           -- v6.1: слова декора (часть имени, lowercase)
+            "handle", "knob", "lever", "hinge", "door", "button", "switch", "seat",
+            "sign", "lamp", "light", "glass", "window", "wheel", "valve", "bucket",
+            "basket", "bag", "sack", "jar", "barrel", "crate", "fence", "gate",
+            "wall", "floor", "roof", "stair", "ladder", "poster", "decal", "rope",
+            "chain", "wire", "bulb", "frame", "mount", "bracket", "spool", "trap",
+        },
+
+        -- v5.9: СЧЁТ ПО ФАКТУ. Дошли -> держимся над валютой и ждём, пока игра
+        -- реально её заберёт (часть исчезла / Collected / событие CoinCollected).
+        TOUCH_TIMEOUT      = 1.2,   -- сек. на попытку подбора (потом — в чёрный список)
+        TOUCH_ASSIST       = true,  -- дёргать firetouchinterest, если исполнитель умеет
+        TOUCH_ASSIST_DELAY = 0.15,  -- через сколько сек. после подлёта пробовать
+        TOUCH_RETRY_AT     = 0.3,   -- повтор попытки касания
+
+        -- Кэш: полный обход workspace дорогой, поэтому не чаще, чем раз в N сек.
+        COIN_SCAN_INTERVAL = 0.75,
+        COIN_RESCAN_EMPTY  = 0.75,  -- если валюты не видно — тот же шаг
+
+        -- v6.1: перепроверка цели. Раньше 0.35 c + "ближе на 25%" -> бот постоянно
+        -- заворачивал в сторону (со стороны выглядело как объезд препятствий).
+        RETARGET_INTERVAL  = 1.5,   -- сек. между пересмотром цели
+        RETARGET_ADVANTAGE = 15,    -- новая цель должна быть ближе минимум на столько
+
+        -- v6.1: ТОЛПА. Монету, у которой висит другой бот, НЕ запрещаем (из-за
+        -- этого после раунда выкидывались все цели и бот стоял на спавне).
+        -- Просто делаем её "дороже" в выборе: штраф к дистанции за игрока рядом.
+        CROWD_WEIGHT     = 3,     -- штраф (студов) за каждого игрока рядом
+        CONTEST_RADIUS   = 10,    -- радиус, в котором игрок считается "рядом"
+        CROWD_WANDER_MIN = 30,    -- сек.: минимум до ухода к случайной монете
+        CROWD_WANDER_MAX = 45,    -- сек.: максимум (чтобы не липнуть к одной куче)
+
+        -- Ресеты
+        IDLE_RESET       = 12,  -- сек. без единой собранной монеты -> ресет
+        RESET_AT_COINS   = 40,  -- собрано монет за раунд -> ресет (0 = выключено)
+        RESET_Y          = -50, -- ниже этой высоты персонаж считается упавшим
+        FALL_CONFIRM     = 1.0, -- столько сек. ниже RESET_Y -> ресет (анти-ложные)
+        SPAWN_GRACE      = 10,  -- льгота после спавна персонажа, сек.
+        ROUND_GRACE      = 12,  -- льгота после старта раунда (роль/кулдаун), сек.
+
+        -- v6.1: "СТОП В ЛОББИ" УДАЛЁН ПОЛНОСТЬЮ — вместе с ним ушла детекция
+        -- надписи Intermission (она тоже иногда ложно останавливала фарм).
+        -- Новый раунд определяется по респавну персонажа и по счётчику валюты
+        -- сервера (CoinsStarted / уменьшение значения).
+
+        -- Anti-Fling
+        FLING_MAX_VEL = 60, FLING_MAX_ANG = 25,
+
+        -- v6.0: точек спавна больше нет (кнопки «Спавн здесь» / «Держаться спавна»
+        -- / «Перенос на спавн» удалены). Здесь остались только анти-круги.
+        FAIL_BLACKLIST   = 20,    -- сек. недостижимая цель не берётся (0 = выкл)
+    }
+
+    local COLORS = {
+        bgTop   = Color3.fromRGB(40, 12, 70),
+        bgBot   = Color3.fromRGB(12, 2, 25),
+        accent  = Color3.fromRGB(140, 45, 240),
+        accent2 = Color3.fromRGB(95, 55, 165),
+        text    = Color3.fromRGB(255, 255, 255),
+        gray    = Color3.fromRGB(55, 55, 60),
+        dim     = Color3.fromRGB(160, 140, 200),
+        green   = Color3.fromRGB(80, 255, 120),
+        red     = Color3.fromRGB(255, 100, 120),
+    }
+
+    --========================================================
+    -- STATE
+    --========================================================
+    local flags = {
+        autoReset  = false,  -- как в v5.3: по умолчанию выключено
+        autoStart  = true,
+        avoidCrowd = true,   -- v6.1: не липнуть к куче ботов у одной монеты
+        antiAFK    = true,
+        antiFling  = true,
+        smartSpeed = true,
+        fly        = false,
+    }
+
+    local unlocked        = false
+    local farmRunning     = false
+    local movingToCoin    = false   -- фарм сейчас ведёт персонажа
+    local speedValue      = 5       -- коэффициент (Smart ON) или студ/с (Smart OFF)
+
+    -- v6.1: стоп-в-лобби удалён целиком, цели-«круги» остались
+    local failedUntil      = {}     -- цель -> время, до которого её не берём
+
+    -- v6.1: уход от толпы раз в CROWD_WANDER_MIN..MAX секунд
+    local wanderNextAt     = 0      -- когда в следующий раз уходить к случайной
+    local wanderTarget     = nil    -- выбранная случайная цель (забирается 1 раз)
+
+    local roundCoins      = 0
+    local visited         = {}      -- монета -> время посещения
+    local currentTarget   = nil
+    local lastProgress    = os.clock()  -- время последнего "полезного" действия
+    local graceUntil      = 0           -- до этого времени авто-ресет не работает
+    local fallSince       = nil         -- когда персонаж оказался ниже RESET_Y
+
+    -- Кэш частей персонажа для noclip
+    local parts        = {}
+    local savedCollide = {}
+
+    -- Кэш валюты
+    local coinCache    = {}
+    local coinNextScan = 0
+    local currencyCount = 0     -- сколько объектов валюты видно (для статуса)
+    local currencyName  = nil   -- авто-определённое имя валюты
+    local loggedCurrency = nil  -- чтобы не спамить логом одним и тем же
+    local lastDump      = 0
+    local targetLogged  = false -- первая цель раунда уже выведена в лог
+    local currencyMode  = nil   -- чем валюта найдена: CoinID / теги / имя / вручную
+
+    -- v5.9: счёт по факту. Либо событие сервера CoinCollected (самый точный
+    -- вариант), либо фактическое исчезновение валюты после подлёта.
+    local coinEventBound = false  -- найден RemoteEvent валюты
+    local bagCount       = 0      -- сколько валюты сервер реально выдал
+    local bagBaseline    = nil    -- предыдущее значение счётчика сервера
+    local bagCapacity    = nil    -- вместимость мешка (если сервер сообщил)
+    local missStreak     = 0      -- сколько целей подряд не подобралось
+
+    -- Диагностика движения
+    local idleReason = "остановлен"   -- почему фарм сейчас не двигает персонажа
+    local dbgText    = ""             -- что показывать второй строкой статуса
+    local moveMode   = "cframe"       -- "cframe" | "velocity" (fallback)
+    local lastDbgPos = nil
+    local dbgNextAt  = 0              -- троттлинг обновления строки статуса
+
+    -- v6.1: ЛОГ В ОКНЕ вместо F9. Панель создаётся позже (в GUI), а писать в лог
+    -- нужно уже из поиска валюты, поэтому объявляем всё здесь.
+    local LOG_MAX    = 6
+    local logLines   = {}
+    local logRepaint = function() end   -- заменяется, когда панель лога создана
+
+    local function addLog(msg)
+        local line = ("[%s] %s"):format(os.date("%H:%M:%S"), tostring(msg))
+        table.insert(logLines, 1, line)
+        while #logLines > LOG_MAX do table.remove(logLines) end
+        logRepaint(table.concat(logLines, "\n"))
+        print("[Cosmic] " .. line)
+    end
+
+    -- Объявлены заранее: на них ссылаются обработчики GUI
+    local farmStart, farmStop, updateStatus
+
+    --========================================================
+    -- BASIC HELPERS
+    --========================================================
+    local function make(class, props, children)
+        local inst = Instance.new(class)
+        for k, v in pairs(props or {}) do inst[k] = v end
+        for _, c in ipairs(children or {}) do c.Parent = inst end
+        return inst
+    end
+
+    local function getHumanoid()
+        local char = LocalPlayer.Character
+        return char and char:FindFirstChildOfClass("Humanoid")
+    end
+
+    local function getRoot()
+        local char = LocalPlayer.Character
+        return char and char:FindFirstChild("HumanoidRootPart")
+    end
+
+    -- Пол под точкой (как в v5.2): бот едет ПО ЗЕМЛЕ, а не проваливается в неё.
+    -- Луч пускаем чуть выше корня (иначе можно зацепить потолок) и исключаем
+    -- самого персонажа.
+    local function groundY(pos)
+        local char = LocalPlayer.Character
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances = char and { char } or {}
+
+        local origin = Vector3.new(pos.X, pos.Y + 2, pos.Z)
+        local hit = workspace:Raycast(origin, Vector3.new(0, -200, 0), params)
+        return hit and hit.Position.Y or pos.Y
+    end
+
+    -- Высота корня над полом, пока персонаж стоит.
+    -- v6.0: берём её из Humanoid.HipHeight (R6/R15 ≈ 3), а НЕ замером под
+    -- персонажем: замер зависел от того, что сейчас под ним (стол, монета, край
+    -- платформы), поэтому корень "прыгал" на ~3 студа.
+    local function computeHipOffset()
+        local root = getRoot()
+        local hum  = getHumanoid()
+        if root and hum then
+            local ok, h = pcall(function() return hum.HipHeight + root.Size.Y * 0.5 end)
+            if ok and type(h) == "number" and h >= 1 and h <= 6 then return h end
+        end
+        if not root then return 3 end
+        local offset = root.Position.Y - groundY(root.Position)
+        if offset < 1 or offset > 6 then offset = 3 end
+        return offset
+    end
+
+    -- v6.0: пол ПОД САМОЙ ВАЛЮТОЙ (а не под персонажем).
+    -- Луч стартует чуть НИЖЕ центра валюты, чтобы не зацепить её саму; сама
+    -- валюта и персонаж исключены из проверки. nil = пола под ней нет.
+    local function coinFloorY(coin)
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        local exclude = {}
+        local char = LocalPlayer.Character
+        if char then exclude[#exclude + 1] = char end
+        exclude[#exclude + 1] = coin
+        params.FilterDescendantsInstances = exclude
+
+        local half = 0
+        pcall(function() half = coin.Size.Y * 0.5 end)
+        local origin = coin.Position - Vector3.new(0, half + 0.1, 0)
+        local hit = workspace:Raycast(origin, Vector3.new(0, -300, 0), params)
+        return hit and hit.Position.Y or nil
+    end
+
+    -- v6.0: ТОЧКА, К КОТОРОЙ ВЕДЁМ КОРЕНЬ (одна на всю цель, не меняется).
+    --   валюта на полу   -> (X, пол + высота корня, Z): едем "по земле";
+    --   валюта в воздухе -> (X, валюта.Y + PICKUP_LIFT, Z): летим прямо к ней.
+    -- Высота НЕ зависит от того, что под персонажем, поэтому по пути она не
+    -- меняется: бот больше не подпрыгивает на столах/лавках и не приседает
+    -- после подобранной монеты.
+    local function flightGoal(coin, hipOffset)
+        local gy = coinFloorY(coin)
+        if gy and (coin.Position.Y - gy) <= CONFIG.FLOOR_TOLERANCE then
+            return Vector3.new(coin.Position.X, gy + (hipOffset or 3), coin.Position.Z)
+        end
+        return Vector3.new(coin.Position.X, coin.Position.Y + CONFIG.PICKUP_LIFT, coin.Position.Z)
+    end
+
+    local function getEffectiveSpeed(dist)
+        if not flags.smartSpeed then
+            return math.clamp(speedValue, 0, CONFIG.SPEED_CAP)
+        end
+
+        -- Чем ближе цель, тем больше множитель (0.6 ... 3).
+        local d      = math.max(dist, 1)
+        local factor = math.clamp(CONFIG.SMART_REF_DIST / d,
+            CONFIG.SMART_FACTOR_MIN, CONFIG.SMART_FACTOR_MAX)
+
+        local smart = CONFIG.SMART_BASE * factor
+        local coeff = speedValue > 0 and speedValue or 1
+        return math.clamp(smart * coeff, CONFIG.MIN_FARM_SPEED, CONFIG.SPEED_CAP)
+    end
+
+    --========================================================
+    -- GUI
+    --========================================================
+    local SIZE_PASS = UDim2.new(0, 320, 0, 220)
+    local SIZE_HUB  = UDim2.new(0, 300, 0, 470)
+
+    local old = PlayerGui:FindFirstChild("CosmicAutofarm")
+    if old then old:Destroy() end
+
+    local gui = make("ScreenGui", {
+        Name = "CosmicAutofarm", ResetOnSpawn = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        Parent = PlayerGui,
+    })
+
+    local main = make("Frame", {
+        Name = "Main", Size = UDim2.new(0, 0, 0, 0), Position = UDim2.new(0.5, 0, 0.5, 0),
+        AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.new(1, 1, 1), ClipsDescendants = true,
+        Active = true, Visible = false, Parent = gui,
+    }, {
+        make("UICorner", { CornerRadius = UDim.new(0, 14) }),
+        make("UIStroke", { Color = COLORS.accent, Thickness = 1.5 }),
+        make("UIGradient", { Color = ColorSequence.new(COLORS.bgTop, COLORS.bgBot), Rotation = 60 }),
+    })
+
+    -- ---------- Экран пароля ----------
+    local passPage = make("Frame", {
+        Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Parent = main,
+    })
+
+    make("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 26), Position = UDim2.new(0, 0, 0, 24), BackgroundTransparency = 1,
+        Text = "COSMIC MM2 FARM", Font = Enum.Font.GothamBold, TextSize = 20, TextColor3 = COLORS.text,
+        Parent = passPage,
+    })
+
+    make("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 16), Position = UDim2.new(0, 0, 0, 52), BackgroundTransparency = 1,
+        Text = "v6.1", Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = COLORS.dim, Parent = passPage,
+    })
+
+    local passInput = make("TextBox", {
+        Size = UDim2.new(1, -48, 0, 36), Position = UDim2.new(0, 24, 0, 84), BackgroundColor3 = COLORS.gray,
+        Text = "", PlaceholderText = "password", PlaceholderColor3 = COLORS.dim, Font = Enum.Font.Gotham,
+        TextSize = 15, TextColor3 = COLORS.text, ClearTextOnFocus = false, Parent = passPage,
+    }, { make("UICorner", { CornerRadius = UDim.new(0, 8) }) })
+
+    local passError = make("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 16), Position = UDim2.new(0, 0, 0, 124), BackgroundTransparency = 1,
+        Text = "", Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = COLORS.red, Parent = passPage,
+    })
+
+    local unlockBtn = make("TextButton", {
+        Size = UDim2.new(1, -48, 0, 36), Position = UDim2.new(0, 24, 0, 146), BackgroundColor3 = COLORS.accent,
+        Text = "Unlock", Font = Enum.Font.GothamMedium, TextSize = 15, TextColor3 = COLORS.text,
+        Parent = passPage,
+    }, { make("UICorner", { CornerRadius = UDim.new(0, 8) }) })
+    -- ---------- Основной экран ----------
+    local hubPage = make("Frame", {
+        Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Visible = false, Parent = main,
+    })
+
+    -- Шапка: за неё таскаем окно
+    local header = make("Frame", {
+        Size = UDim2.new(1, -16, 0, 24), Position = UDim2.new(0, 8, 0, 6), BackgroundTransparency = 1,
+        Parent = hubPage,
+    })
+
+    make("TextLabel", {
+        Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = "COSMIC MM2 FARM   ·   v6.1",
+        Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = COLORS.text,
+        TextXAlignment = Enum.TextXAlignment.Left, Parent = header,
+    })
+
+    local tabBar = make("Frame", {
+        Size = UDim2.new(1, -16, 0, 30), Position = UDim2.new(0, 8, 0, 32), BackgroundTransparency = 1,
+        Parent = hubPage,
+    })
+
+    local function makeTab(text, posX)
+        return make("TextButton", {
+            Size = UDim2.new(0.5, -2, 1, 0), Position = UDim2.new(posX, 0, 0, 0),
+            BackgroundColor3 = COLORS.gray, Text = text, Font = Enum.Font.GothamMedium, TextSize = 14,
+            TextColor3 = COLORS.dim, AutoButtonColor = false, Parent = tabBar,
+        }, { make("UICorner", { CornerRadius = UDim.new(0, 8) }) })
+    end
+
+    local farmTab     = makeTab("Farm", 0)
+    local settingsTab = makeTab("Settings", 0.5)
+
+    local function makePage()
+        return make("Frame", {
+            Size = UDim2.new(1, -16, 1, -76), Position = UDim2.new(0, 8, 0, 68), BackgroundTransparency = 1,
+            Parent = hubPage,
+        })
+    end
+
+    local farmPage     = makePage()
+    local settingsPage = makePage()
+    settingsPage.Visible = false
+
+    -- ---------- Универсальный тумблер ----------
+    local function createToggle(parent, key, label, y)
+        local btn = make("TextButton", {
+            Size = UDim2.new(1, 0, 0, 32), Position = UDim2.new(0, 0, 0, y), BackgroundColor3 = COLORS.gray,
+            Text = label, Font = Enum.Font.GothamMedium, TextSize = 14, TextColor3 = COLORS.text,
+            TextXAlignment = Enum.TextXAlignment.Left, AutoButtonColor = false, Parent = parent,
+        }, {
+            make("UICorner", { CornerRadius = UDim.new(0, 8) }),
+            make("UIPadding", { PaddingLeft = UDim.new(0, 10) }),
+        })
+
+        local function paint()
+            local on = flags[key]
+            btn.BackgroundColor3 = on and COLORS.accent or COLORS.gray
+            btn.Text = (on and "●  " or "○  ") .. label
+        end
+
+        btn.MouseButton1Click:Connect(function()
+            flags[key] = not flags[key]
+            paint()
+            if key == "fly" and flags.fly and farmRunning then
+                farmStop()   -- полёт и фарм одновременно конфликтуют
+            end
+        end)
+
+        paint()
+        return btn
+    end
+
+    -- ---------- Вкладка Farm ----------
+    local runBtn = make("TextButton", {
+        Size = UDim2.new(1, 0, 0, 40), BackgroundColor3 = COLORS.accent, Text = "Run farm",
+        Font = Enum.Font.GothamMedium, TextSize = 15, TextColor3 = COLORS.text, Parent = farmPage,
+    }, { make("UICorner", { CornerRadius = UDim.new(0, 8) }) })
+
+    local statusInfo = make("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 28), Position = UDim2.new(0, 0, 0, 44), BackgroundTransparency = 1,
+        Text = "idle | +0 | вал:0\nцель: —", Font = Enum.Font.Gotham, TextSize = 11, TextColor3 = COLORS.dim,
+        TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+        Parent = farmPage,
+    })
+
+    createToggle(farmPage, "autoReset",   "Auto Reset",   74)
+    createToggle(farmPage, "autoStart",   "Auto Start",   112)
+
+    -- v6.1: «Стоп в лобби» удалён (кнопка, флаг и вся функция). Место занял ЛОГ:
+    -- F9 во многих исполнителях ничего не открывает, поэтому всё важное пишется
+    -- прямо в окно (и дублируется в консоль, если она есть).
+    make("TextLabel", {
+        Size = UDim2.new(0, 40, 0, 14), Position = UDim2.new(0, 0, 0, 152), BackgroundTransparency = 1,
+        Text = "Лог:", Font = Enum.Font.GothamMedium, TextSize = 11, TextColor3 = COLORS.dim,
+        TextXAlignment = Enum.TextXAlignment.Left, Parent = farmPage,
+    })
+
+    local logBox = make("Frame", {
+        Size = UDim2.new(1, 0, 0, 96), Position = UDim2.new(0, 0, 0, 168), BackgroundColor3 = COLORS.gray,
+        BackgroundTransparency = 0.35, Parent = farmPage,
+    }, {
+        make("UICorner", { CornerRadius = UDim.new(0, 6) }),
+        make("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6),
+                            PaddingTop = UDim.new(0, 4) }),
+        make("TextLabel", {
+            Name = "Body", Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+            Text = "(пока пусто)", Font = Enum.Font.Code, TextSize = 9, TextColor3 = COLORS.dim,
+            TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Top,
+        }),
+    })
+
+    logRepaint = function(text)
+        local body = logBox:FindFirstChild("Body")
+        if body then body.Text = (text ~= "" and text) or "(пока пусто)" end
+    end
+
+    local copyBtn = make("TextButton", {
+        Size = UDim2.new(0, 52, 0, 14), Position = UDim2.new(1, -52, 0, 152), BackgroundColor3 = COLORS.gray,
+        Text = "Copy", Font = Enum.Font.GothamMedium, TextSize = 10, TextColor3 = COLORS.text,
+        AutoButtonColor = false, Parent = farmPage,
+    }, { make("UICorner", { CornerRadius = UDim.new(0, 5) }) })
+
+    copyBtn.MouseButton1Click:Connect(function()
+        local text = table.concat(logLines, "\n")
+        local ok = pcall(function() setclipboard(text) end)
+        copyBtn.Text = ok and "OK" or "нет"
+        task.delay(1, function() copyBtn.Text = "Copy" end)
+    end)
+
+    -- v6.1: памятка — коротко, без F9.
+    make("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 108), Position = UDim2.new(0, 0, 0, 268), BackgroundTransparency = 1,
+        Text = "Валюта: CoinID / теги с «coin» / имя с «coin» (Coin, Coin_Server, CoinVisual). "
+            .. "Декор (ручки, двери, вёдра) отсекается. Не нашлась — смотри лог.\n"
+            .. "Счёт по факту: часть исчезла или пришло CoinCollected.\n"
+            .. "Полёт по прямой: высота от пола ПОД монетой, цель не меняется на ходу.\n"
+            .. "Толпа: монета с ботами рядом не запрещена, просто дороже в выборе; "
+            .. "раз в 30-45 c бот уходит к случайной монете.",
+        TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, Font = Enum.Font.Gotham, TextSize = 10,
+        TextColor3 = COLORS.dim, Parent = farmPage,
+    })
+
+    -- ---------- Вкладка Settings ----------
+    createToggle(settingsPage, "antiAFK",    "Anti AFK",              0)
+    createToggle(settingsPage, "antiFling",  "Anti-Fling",            38)
+    -- v5.9: тумблера Noclip больше НЕТ — он включается сам (см. noclipWanted()).
+    createToggle(settingsPage, "fly",        "Fly (WASD + Space/Shift)", 76)
+    createToggle(settingsPage, "smartSpeed", "Smart Speed",           114)
+    createToggle(settingsPage, "avoidCrowd", "Избегать толпы",        152)
+
+    -- v6.1: «Избегать толпы» — монета, у которой висят другие боты, не запрещается,
+    -- а просто получает штраф при выборе; раз в 30..45 c бот уходит к случайной.
+    local sliderLabel = make("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 18), Position = UDim2.new(0, 0, 0, 196), BackgroundTransparency = 1,
+        Text = "Speed: 5", Font = Enum.Font.GothamMedium, TextSize = 13, TextColor3 = COLORS.dim,
+        TextXAlignment = Enum.TextXAlignment.Left, Parent = settingsPage,
+    })
+
+    local sliderBG = make("TextButton", {
+        Size = UDim2.new(1, 0, 0, 6), Position = UDim2.new(0, 0, 0, 222), BackgroundColor3 = COLORS.gray,
+        Text = "", AutoButtonColor = false, Parent = settingsPage,
+    }, { make("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+
+    local sliderKnob = make("Frame", {
+        Size = UDim2.new(0, 16, 0, 16), BackgroundColor3 = COLORS.accent, Parent = sliderBG,
+    }, { make("UICorner", { CornerRadius = UDim.new(1, 0) }) })
+
+    local speedInput = make("TextBox", {
+        Size = UDim2.new(1, 0, 0, 30), Position = UDim2.new(0, 0, 0, 238), BackgroundColor3 = COLORS.gray,
+        Text = "5", PlaceholderText = ("Speed %d-%d"):format(CONFIG.SPEED_MIN, CONFIG.SPEED_MAX),
+        Font = Enum.Font.Gotham, TextSize = 14, TextColor3 = COLORS.text, ClearTextOnFocus = false,
+        Parent = settingsPage,
+    }, { make("UICorner", { CornerRadius = UDim.new(0, 8) }) })
+
+    make("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 32), Position = UDim2.new(0, 0, 0, 274), BackgroundTransparency = 1,
+        Text = "Smart Speed: 1 = без ускорения, больше = быстрее.\nSmart OFF: значение = студов/сек.",
+        TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, Font = Enum.Font.Gotham, TextSize = 11,
+        TextColor3 = COLORS.dim, Parent = settingsPage,
+    })
+
+    --========================================================
+    -- GUI LOGIC
+    --========================================================
+    function updateStatus()
+        local mode = farmRunning and "running" or "остановлен"
+
+        local line2 = idleReason
+        if currentTarget and dbgText ~= "" then line2 = dbgText end
+
+        -- v6.0: точки спавна больше нет, в статусе только счёт по факту (мешок)
+        local extra = ""
+        if coinEventBound then
+            extra = extra .. (" | мешок:%d%s"):format(bagCount,
+                bagCapacity and ("/" .. tostring(bagCapacity)) or "")
+        end
+
+        statusInfo.Text = ("%s | +%d | вал:%d%s\n%s"):format(mode, roundCoins, currencyCount, extra, line2)
+    end
+
+    local function showTab(name)
+        local isFarm = (name == "farm")
+        farmPage.Visible     = isFarm
+        settingsPage.Visible = not isFarm
+        farmTab.BackgroundColor3     = isFarm and COLORS.accent or COLORS.gray
+        farmTab.TextColor3           = isFarm and COLORS.text or COLORS.dim
+        settingsTab.BackgroundColor3 = isFarm and COLORS.gray or COLORS.accent
+        settingsTab.TextColor3       = isFarm and COLORS.dim or COLORS.text
+    end
+
+    farmTab.MouseButton1Click:Connect(function() showTab("farm") end)
+    settingsTab.MouseButton1Click:Connect(function() showTab("settings") end)
+
+    -- ---------- Пароль ----------
+    local function tryUnlock()
+        if passInput.Text == CONFIG.PASSWORD then
+            unlocked = true
+            passError.Text = ""
+            passPage.Visible = false
+            hubPage.Visible  = true
+            TweenService:Create(main, TweenInfo.new(0.25, Enum.EasingStyle.Quad), {
+                Size = SIZE_HUB,
+            }):Play()
+            if flags.autoStart then farmStart() end
+        else
+            passInput.Text = ""
+            passError.Text = "Wrong password"
+            task.delay(2, function()
+                if passError.Text == "Wrong password" then passError.Text = "" end
+            end)
+        end
+    end
+
+    passInput.FocusLost:Connect(function(enterPressed)
+        if enterPressed then tryUnlock() end
+    end)
+    unlockBtn.MouseButton1Click:Connect(tryUnlock)
+
+    -- ---------- Слайдер скорости ----------
+    local function updateSpeedVisuals()
+        local percent = (speedValue - CONFIG.SPEED_MIN) / (CONFIG.SPEED_MAX - CONFIG.SPEED_MIN)
+        percent = math.clamp(percent, 0, 1)
+        sliderKnob.Position = UDim2.new(percent, -8, 0.5, -8)
+        sliderLabel.Text = "Speed: " .. tostring(speedValue)
+        if not speedInput:IsFocused() then
+            speedInput.Text = tostring(speedValue)
+        end
+    end
+
+    local sliderDragging = false
+
+    local function inputX(input)
+        if input.UserInputType == Enum.UserInputType.Touch then
+            return input.Position.X
+        end
+        return UserInputService:GetMouseLocation().X
+    end
+
+    local function setSpeedFromX(x)
+        local ap   = sliderBG.AbsolutePosition
+        local size = sliderBG.AbsoluteSize
+        if size.X <= 0 then return end
+        local percent = math.clamp((x - ap.X) / size.X, 0, 1)
+        speedValue = math.floor(CONFIG.SPEED_MIN + percent * (CONFIG.SPEED_MAX - CONFIG.SPEED_MIN) + 0.5)
+        updateSpeedVisuals()
+    end
+
+    sliderBG.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            sliderDragging = true
+            setSpeedFromX(inputX(input))
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if not sliderDragging then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch then
+            setSpeedFromX(inputX(input))
+        end
+    end)
+
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            sliderDragging = false
+        end
+    end)
+
+    speedInput.FocusLost:Connect(function()
+        local n = tonumber(speedInput.Text)
+        if n then
+            speedValue = math.clamp(math.floor(n), CONFIG.SPEED_MIN, CONFIG.SPEED_MAX)
+        end
+        updateSpeedVisuals()
+    end)
+
+    -- ---------- Перетаскивание окна за шапку ----------
+    local dragging, dragStart, startPos
+
+    header.InputBegan:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1
+            and input.UserInputType ~= Enum.UserInputType.Touch then
+            return
+        end
+        dragging  = true
+        dragStart = input.Position
+        startPos  = main.Position
+
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch then
+            local delta = input.Position - dragStart
+            main.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+
+    -- ---------- Ctrl: скрыть/показать меню ----------
+    UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if gameProcessed then return end
+        if UserInputService:GetFocusedTextBox() then return end
+        if input.KeyCode == Enum.KeyCode.LeftControl or input.KeyCode == Enum.KeyCode.RightControl then
+            main.Visible = not main.Visible
+            sliderDragging = false
+        end
+    end)
+
+    --========================================================
+    -- NOCLIP / восстановление гуманоида
+    --========================================================
+    local function refreshParts()
+        parts = {}
+        -- savedCollide НЕ чистим: иначе части, у которых мы уже выключили
+        -- коллизию, никогда не получат её обратно.
+        local char = LocalPlayer.Character
+        if not char then return end
+        for _, d in ipairs(char:GetDescendants()) do
+            if d:IsA("BasePart") then
+                parts[#parts + 1] = d
+            end
+        end
+    end
+
+    -- v5.9: NOCLIP — НЕ НАСТРОЙКА И НЕ ТУМБЛЕР. Он нужен ровно тогда, когда
+    -- скрипт ведёт персонажа (фарм идёт / включён Fly / летим к цели). Когда всё
+    -- стоит, коллизии возвращаются — иначе персонаж проседал бы сквозь пол в лобби.
+    local function noclipWanted()
+        return farmRunning or flags.fly or movingToCoin
+    end
+
+    -- Единая точка: держит noclip, гасит "парящий" noclip и возвращает
+    -- AutoRotate/PlatformStand, когда они не заняты фармом/полётом.
+    local function maintain()
+        local want = noclipWanted()
+
+        if want then
+            if #parts == 0 then refreshParts() end
+            for i = 1, #parts do
+                local p = parts[i]
+                if p.Parent then
+                    if savedCollide[p] == nil then savedCollide[p] = p.CanCollide end
+                    if p.CanCollide then p.CanCollide = false end
+                end
+            end
+        elseif next(savedCollide) ~= nil then
+            for p, v in pairs(savedCollide) do
+                if p.Parent then p.CanCollide = v end
+            end
+            savedCollide = {}
+        end
+
+        -- Фарм идёт, но сейчас не летим (ищем цель / пауза): гасим скорость,
+        -- иначе с выключенной коллизией персонаж медленно проседает.
+        if want and not flags.fly and not movingToCoin then
+            local root = getRoot()
+            if root then
+                if root.AssemblyLinearVelocity.Magnitude > 0.01 then
+                    root.AssemblyLinearVelocity = Vector3.zero
+                end
+            end
+        end
+
+        -- v6.1: ПОКА ВЕДЁМ ПЕРСОНАЖА — PlatformStand = true.
+        -- Потолок бот проходил и раньше (CanCollide = false у всех частей), а ПОЛ
+        -- его "держал" не коллизией, а самим Humanoid: у гуманоида есть свой
+        -- "пол" под ногами, и он подпирал корень на HipHeight. Из-за этого бот не
+        -- опускался ниже пола и "отталкивался" от него — со стороны это и было
+        -- похоже на объезд препятствий. С PlatformStand гуманоид перестаёт
+        -- подпирать, поэтому пол и потолок проходятся одинаково.
+        local hum = getHumanoid()
+        if hum then
+            if want then
+                if not hum.PlatformStand then hum.PlatformStand = true end
+                if hum.AutoRotate then hum.AutoRotate = false end
+            else
+                if hum.PlatformStand then hum.PlatformStand = false end
+                if not hum.AutoRotate then hum.AutoRotate = true end
+            end
+        end
+    end
+
+    task.spawn(function()
+        while true do
+            task.wait(0.2)
+            local ok, err = pcall(maintain)
+            if not ok then warn("[Cosmic] maintain error:", err) end
+        end
+    end)
+
+    -- КАК В v5.3: пока фарм ведёт персонажа, коллизии выключаются КАЖДЫЙ
+    -- физический шаг. С таймером 0.2 с физика успевает вернуть CanCollide,
+    -- и персонаж застревает в стене/полу — со стороны это выглядит как
+    -- "бот не летит". Здесь же ноклип восстанавливается мгновенно.
+    RunService.Stepped:Connect(function()
+        if not noclipWanted() then return end
+
+        local char = LocalPlayer.Character
+        if not char then return end
+
+        for _, p in ipairs(char:GetDescendants()) do
+            if p:IsA("BasePart") then
+                if p.CanCollide then
+                    if savedCollide[p] == nil then savedCollide[p] = true end
+                    p.CanCollide = false
+                end
+            end
+        end
+    end)
+
+    --========================================================
+    -- ANTI-FLING
+    --========================================================
+    RunService.Heartbeat:Connect(function()
+        if not flags.antiFling then return end
+        if flags.fly or movingToCoin then return end
+
+        local root = getRoot()
+        if not root then return end
+
+        local v = root.AssemblyLinearVelocity
+        if v.Magnitude > CONFIG.FLING_MAX_VEL then
+            root.AssemblyLinearVelocity = v.Unit * CONFIG.FLING_MAX_VEL
+        end
+
+        local av = root.AssemblyAngularVelocity
+        if av.Magnitude > CONFIG.FLING_MAX_ANG then
+            root.AssemblyAngularVelocity = av.Unit * CONFIG.FLING_MAX_ANG
+        end
+    end)
+
+    --========================================================
+    -- ANTI-AFK
+    --========================================================
+    LocalPlayer.Idled:Connect(function()
+        if not flags.antiAFK then return end
+        if VirtualUser then
+            pcall(function()
+                VirtualUser:CaptureController()
+                VirtualUser:ClickButton2(Vector2.new())
+            end)
+        else
+            pcall(function()
+                local VIM = game:GetService("VirtualInputManager")
+                VIM:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
+                task.wait(0.1)
+                VIM:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
+            end)
+        end
+    end)
+
+    --========================================================
+    -- FLY: WASD + Space (вверх) / Shift (вниз)
+    --========================================================
+    local flyKeys = {}
+
+    UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if gameProcessed then return end
+        if input.UserInputType == Enum.UserInputType.Keyboard then
+            flyKeys[input.KeyCode] = true
+        end
+    end)
+
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Keyboard then
+            flyKeys[input.KeyCode] = false
+        end
+    end)
+
+    RunService.RenderStepped:Connect(function(dt)
+        if not flags.fly then return end
+
+        local root = getRoot()
+        local hum  = getHumanoid()
+        if not root or not hum then return end
+
+        hum.AutoRotate = false
+        if not hum.PlatformStand then hum.PlatformStand = true end
+
+        local cam  = workspace.CurrentCamera
+        local move = Vector3.new()
+
+        if flyKeys[Enum.KeyCode.W] then move += cam.CFrame.LookVector end
+        if flyKeys[Enum.KeyCode.S] then move -= cam.CFrame.LookVector end
+        if flyKeys[Enum.KeyCode.D] then move += cam.CFrame.RightVector end
+        if flyKeys[Enum.KeyCode.A] then move -= cam.CFrame.RightVector end
+        if flyKeys[Enum.KeyCode.Space] then move += Vector3.new(0, 1, 0) end
+        if flyKeys[Enum.KeyCode.LeftShift] or flyKeys[Enum.KeyCode.RightShift] then
+            move -= Vector3.new(0, 1, 0)
+        end
+
+        local look = cam.CFrame.LookVector
+        local flat = Vector3.new(look.X, 0, look.Z)
+        if flat.Magnitude < 0.001 then
+            flat = Vector3.new(0, 0, -1)
+        end
+
+        local pos = root.Position
+        if move.Magnitude > 0 then
+            pos = pos + move.Unit * (CONFIG.FLY_SPEED * math.clamp(dt, 0, 0.1))
+        end
+
+        pcall(function()
+            root.CFrame = CFrame.lookAt(pos, pos + flat.Unit)
+            root.AssemblyLinearVelocity  = Vector3.new(0, 0, 0)
+            root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+        end)
+    end)
+    --========================================================
+    -- CHARACTER LIFECYCLE
+    --========================================================
+    -- v6.0: АВТО-РЕСЕТ СНОВА РАБОТАЕТ.
+    -- В v5.8/v5.9 при ALLOW_SELF_RESET = false он вместо ресета пытался перенести
+    -- персонажа на точку спавна, а без точки спавна не делал НИЧЕГО (писал
+    -- подсказку в F9) — поэтому тумблер Auto Reset выглядел мёртвым.
+    -- Теперь, как в v5.7: персонаж перерождается (Health = 0 -> Dead), счётчики и
+    -- цель сбрасываются, выдаётся льгота SPAWN_GRACE. Точек спавна больше нет,
+    -- так что это единственный и правильный путь.
+    local function respawnNow()
+        currentTarget = nil
+        movingToCoin  = false
+        fallSince     = nil
+        lastProgress  = os.clock()
+        graceUntil    = os.clock() + CONFIG.SPAWN_GRACE
+
+        local hum  = getHumanoid()
+        local char = LocalPlayer.Character
+        if not hum then return end
+        if hum.Health <= 0 then return end   -- уже мёртв: ждём респавн, не спамим
+
+        print("[Cosmic] авто-ресет: перерождаю персонажа")
+        pcall(function() hum.Health = 0 end)
+        pcall(function() hum:ChangeState(Enum.HumanoidStateType.Dead) end)
+        if char then
+            pcall(function() char:BreakJoints() end)
+        end
+
+        -- Fallback: если сервер не принял смерть, ставим на SpawnLocation карты
+        -- (если он есть). Точка спавна из CONFIG больше не нужна.
+        task.delay(1, function()
+            local h = getHumanoid()
+            if h and h.Health > 0 then
+                local root  = getRoot()
+                local spawn = workspace:FindFirstChildOfClass("SpawnLocation")
+                if root and spawn then
+                    pcall(function()
+                        root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                        root.CFrame = spawn.CFrame + Vector3.new(0, 5, 0)
+                    end)
+                end
+            end
+        end)
+    end
+
+    local function onCharacterSpawn(char)
+        -- v6.1: новый персонаж = новый раунд. Раньше это же делал beginRound() по
+        -- надписи Intermission; теперь стоп-в-лобби и детект Intermission удалены,
+        -- и точкой отсчёта раунда стал респавн персонажа.
+        parts          = {}
+        savedCollide   = {}
+        currentTarget  = nil
+        movingToCoin   = false
+        visited        = {}
+        roundCoins     = 0
+        failedUntil    = {}   -- в новом раунде старые цели уже неактуальны
+        lastProgress   = os.clock()
+        graceUntil     = math.max(graceUntil, os.clock() + CONFIG.ROUND_GRACE)
+        fallSince      = nil
+        wanderTarget   = nil
+        wanderNextAt   = os.clock() + CONFIG.CROWD_WANDER_MIN
+        currencyName   = nil  -- валюта на новой карте может называться иначе
+        currencyMode   = nil
+        loggedCurrency = nil
+        targetLogged   = false
+        coinNextScan   = 0    -- сразу пересканируем карту
+        missStreak     = 0
+        moveMode       = "cframe"
+        dbgText        = ""
+        idleReason     = "новый раунд: ищу валюту"
+
+        if flags.autoStart and unlocked then
+            farmStart()      -- заодно синхронизирует текст кнопки Run/Stop
+        end
+        addLog("новый персонаж — раунд начинается")
+        updateStatus()
+
+        task.spawn(function()
+            char:WaitForChild("HumanoidRootPart", 10)
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum then
+                pcall(function()
+                    hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+                end)
+            end
+            if char == LocalPlayer.Character then
+                refreshParts()
+            end
+        end)
+    end
+
+    LocalPlayer.CharacterAdded:Connect(onCharacterSpawn)
+
+    --========================================================
+    -- v6.1: ДЕТЕКЦИИ INTERMISSION БОЛЬШЕ НЕТ (вместе со стопом в лобби).
+    -- Она искала в GUI надпись "intermission" и на 45 c останавливала фарм; при
+    -- постоянной надписи в лобби это выглядело как "бот стоит". Новый раунд
+    -- теперь определяется по респавну персонажа (onCharacterSpawn).
+    --========================================================
+
+    --========================================================
+    -- ВАЛЮТА: отметки посещений, конкуренты, кэш объектов
+    --========================================================
+    local function markVisited(coin)
+        if coin then visited[coin] = os.clock() end
+    end
+
+    -- v5.8: цель, до которой не смогли добраться, не берём FAIL_BLACKLIST секунд.
+    -- Раньше такая цель возвращалась через VISIT_COOLDOWN = 0.6 c, и бот летал
+    -- к ней по кругу — со стороны это и было «летает по респе».
+    local function markFailed(coin)
+        if coin and CONFIG.FAIL_BLACKLIST > 0 then
+            failedUntil[coin] = os.clock() + CONFIG.FAIL_BLACKLIST
+        end
+    end
+
+    local function isRecentlyVisited(coin)
+        local f = failedUntil[coin]
+        if f then
+            if os.clock() < f then return true end
+            failedUntil[coin] = nil
+        end
+        local t = visited[coin]
+        if not t then return false end
+        if os.clock() - t > CONFIG.VISIT_COOLDOWN then
+            visited[coin] = nil
+            return false
+        end
+        return true
+    end
+
+    local function otherPlayerPositions()
+        local list = {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer then
+                local hrp = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    list[#list + 1] = hrp.Position
+                end
+            end
+        end
+        return list
+    end
+
+    -- v6.1: сколько иных игроков "висит" у точки
+    local function crowdAt(pos, others)
+        local n = 0
+        for i = 1, #others do
+            if (others[i] - pos).Magnitude < CONFIG.CONTEST_RADIUS then n += 1 end
+        end
+        return n
+    end
+
+    -- v6.1: ШТРАФ к дистанции, а НЕ запрет цели.
+    -- Раньше монета с игроком рядом ВЫБРАСЫВАЛАСЬ из выбора, и на полном сервере
+    -- ботов не оставалось ни одной цели: бот стоял на спавне с надписью "валюта
+    -- не найдена", хотя счётчик валюты на карте был не ноль. Теперь такая монета
+    -- просто "дороже": +CROWD_WEIGHT студов за каждого игрока рядом.
+    local function crowdPenalty(pos, others)
+        if not flags.avoidCrowd then return 0 end
+        local pen = 0
+        for i = 1, #others do
+            local d = (others[i] - pos).Magnitude
+            if d < CONFIG.CONTEST_RADIUS then
+                pen += (CONFIG.CONTEST_RADIUS - d) * CONFIG.CROWD_WEIGHT
+            end
+        end
+        return pen
+    end
+
+    -- v6.1: другой игрок УЖЕ на монете и заметно ближе нас -> не летим "хвостом".
+    -- Порог жёсткий (4 студа и отрыв 10 студов), чтобы не бросать цель из-за
+    -- того, что кто-то просто летит рядом: раньше из-за этого бот вилял.
+    local function isTakenByOther(coinPos, myPos, others)
+        if not flags.avoidCrowd then return false end
+        local myDist = (myPos - coinPos).Magnitude
+        for i = 1, #others do
+            local d = (others[i] - coinPos).Magnitude
+            if d < 4 and d + 10 < myDist then return true end
+        end
+        return false
+    end
+
+    --========================================================
+    -- v6.1: ВАЛЮТА — УНИВЕРСАЛЬНО, ПО СЛОВУ "coin" + ТОЧНЫЕ ПРИЗНАКИ
+    --========================================================
+    -- Почему так: в MM2 подбираемая часть называется Coin_Server (невидимая, с
+    -- TouchTransmitter), её видимый ребёнок — CoinVisual, на сервере она помечена
+    -- атрибутом CoinID. Раньше бот летал на декор, потому что валюта искалась по
+    -- КЛЮЧЕВЫМ СЛОВАМ ("candy" ловило CandyBucket) и авто-определением "много
+    -- одинаковых мелких частей" — оно и выбирало oct_handle (ручки дверей).
+    -- Теперь авто-определения НЕТ, а слова декора (CURRENCY_DENY) отсекаются явно.
+
+    local function isCharacterPart(obj)
+        local char = LocalPlayer.Character
+        return char ~= nil and obj:IsDescendantOf(char)
+    end
+
+    -- Атрибут валюты у части (nil, если атрибута нет)
+    local function coinAttrOf(p)
+        if CONFIG.CURRENCY_ATTR == "" then return nil end
+        local ok, v = pcall(p.GetAttribute, p, CONFIG.CURRENCY_ATTR)
+        if not ok then return nil end
+        return v
+    end
+
+    -- Точный признак валюты — атрибут CoinID. Значение можно ограничить через
+    -- CONFIG.CURRENCY_ID ("Candy"), по умолчанию принимается любое.
+    local function hasCoinAttr(p)
+        local id = coinAttrOf(p)
+        if id == nil then return false end
+        if CONFIG.CURRENCY_ID ~= nil and id ~= CONFIG.CURRENCY_ID then return false end
+        return true
+    end
+
+    -- Игра уже забрала эту валюту? (часть исчезла или помечена Collected)
+    local function coinGone(p)
+        if not p or not p.Parent then return true end
+        local ok, v = pcall(p.GetAttribute, p, "Collected")
+        return ok and v == true
+    end
+
+    -- Подбираемая часть: TouchTransmitter / ClickDetector / ProximityPrompt
+    -- (у себя или у родителя-хитбокса).
+    local function isInteractivePart(p)
+        if p:FindFirstChildWhichIsA("TouchTransmitter") then return true end
+        if p:FindFirstChildWhichIsA("ClickDetector") then return true end
+        if p:FindFirstChildWhichIsA("ProximityPrompt") then return true end
+
+        local parent = p.Parent
+        if parent and parent:IsA("BasePart")
+            and parent:FindFirstChildWhichIsA("TouchTransmitter") then
+            return true
+        end
+        return false
+    end
+
+    -- Имена в игре повторяются -> результат проверки кэшируем
+    local nameCache = {}
+    local denyCache = {}
+
+    -- v6.1: декор? (handle, door, bucket, lamp...). Проверяем ПОДСТРОКОЙ, потому
+    -- что имена склеены: "oct_handle", "CandyBucket_01", "DoorHandle".
+    local function nameIsDenied(name)
+        if not name or name == "" then return false end
+        local cached = denyCache[name]
+        if cached ~= nil then return cached end
+
+        local low = string.lower(name)
+        local denied = false
+        for i = 1, #CONFIG.CURRENCY_DENY do
+            if string.find(low, CONFIG.CURRENCY_DENY[i], 1, true) then
+                denied = true
+                break
+            end
+        end
+        denyCache[name] = denied
+        return denied
+    end
+
+    -- v6.1: в имени есть слово валюты ("coin")? Подходит Coin, Coin_Server,
+    -- CoinVisual, ServerCoinPart, CandyCoin: слово может стоять где угодно.
+    local function nameHasCurrencyWord(name)
+        if not name or name == "" or CONFIG.CURRENCY_WORD == "" then return false end
+        local cached = nameCache[name]
+        if cached ~= nil then return cached end
+        local isIt = string.find(string.lower(name), CONFIG.CURRENCY_WORD, 1, true) ~= nil
+        nameCache[name] = isIt
+        return isIt
+    end
+    -- Тег CollectionService со словом coin (ServerCoinPart, CoinVisual, Coin...)
+    local function hasCurrencyTag(p)
+        local ok, tags = pcall(p.GetTags, p)
+        if ok and tags then
+            for i = 1, #tags do
+                if string.find(string.lower(tags[i]), "coin", 1, true) then return true end
+            end
+        end
+        for i = 1, #CONFIG.CURRENCY_TAGS do
+            local ok2, has = pcall(function()
+                return CollectionService:HasTag(p, CONFIG.CURRENCY_TAGS[i])
+            end)
+            if ok2 and has then return true end
+        end
+        return false
+    end
+
+    -- Подбираемый предмет обычно мелкий и не мешает ходить
+    local function looksCollectible(p)
+        local s = p.Size
+        local maxSide = math.max(s.X, s.Y, s.Z)
+        if maxSide > CONFIG.CURRENCY_MAX_SIZE then return false end
+        if p.CanCollide and maxSide > CONFIG.CURRENCY_BIG_SIZE then return false end
+        return true
+    end
+
+    -- В список берём и НЕВИДИМЫЕ части: Coin_Server невидима (Transparency = 1),
+    -- зато у неё TouchTransmitter и атрибут CoinID.
+    local function collectParts()
+        local all = {}
+        for _, obj in ipairs(workspace:GetDescendants()) do
+            if obj:IsA("BasePart") and obj.Parent and not isCharacterPart(obj) then
+                if obj.Transparency < 1 or coinAttrOf(obj) ~= nil
+                    or obj:FindFirstChildWhichIsA("TouchTransmitter") ~= nil then
+                    all[#all + 1] = obj
+                end
+            end
+        end
+        return all
+    end
+
+    -- v6.1: ЧЕМ эта часть является валютой. nil = не валюта.
+    -- Возвращает вид признака (для лога), приоритет сверху вниз.
+    local function currencyKind(p)
+        if not p or not p.Parent or isCharacterPart(p) then return nil end
+        if nameIsDenied(p.Name) then return nil end      -- ручки/двери/вёдра — мимо
+        if not looksCollectible(p) then return nil end   -- слишком крупная — декор
+
+        -- 1) атрибут CoinID — самый точный признак, имя не важно
+        if hasCoinAttr(p) then return "CoinID" end
+
+        -- 2) ручные имена (если в игре валюта зовётся иначе)
+        if nameIsExtraCurrency(p.Name) then return "вручную" end
+
+        -- 3) тег CollectionService со словом coin
+        if hasCurrencyTag(p) then return "теги" end
+
+        -- 4) имя содержит "coin" (Coin, Coin_Server, CoinVisual...) — только если
+        --    часть реально подбираемая, иначе это может быть вывеска/иконка
+        if nameHasCurrencyWord(p.Name) and isInteractivePart(p) then return "имя" end
+
+    -- Если валюта не нашлась — показываем в логе, что вообще есть рядом
+    -- (заменяет "[Cosmic] валюта не найдена. Кандидаты..." из консоли).
+    local function dumpCandidates(all)
+        local stats = {}
+        for i = 1, #all do
+            local p = all[i]
+            local s = p.Size
+            if math.max(s.X, s.Y, s.Z) <= CONFIG.CURRENCY_MAX_SIZE then
+                local e = stats[p.Name]
+                if e then
+                    e.n += 1
+                    if isInteractivePart(p) then e.inter = true end
+                else
+                    stats[p.Name] = { n = 1, inter = isInteractivePart(p) }
+                end
+            end
+        end
+
+        local arr = {}
+        for name, e in pairs(stats) do
+            arr[#arr + 1] = { name = name, n = e.n, inter = e.inter }
+        end
+        table.sort(arr, function(a, b) return a.n > b.n end)
+
+        local msg = "валюта не найдена, кандидаты:"
+        for i = 1, math.min(#arr, 5) do
+            msg = msg .. (" %s x%d%s"):format(arr[i].name, arr[i].n,
+                arr[i].inter and "*" or "")
+        end
+        return msg
+    end
+
+    -- Полный обход workspace дорогой -> кэшируем список валюты.
+    local function refreshCoinCache()
+        local all   = collectParts()
+        local list  = {}
+        local kinds = {}
+        local seen  = {}
+
+        for i = 1, #all do
+            local p    = all[i]
+            local kind = currencyKind(p)
+            if kind and not seen[p] then
+                seen[p] = true
+                list[#list + 1] = p
+                kinds[kind] = (kinds[kind] or 0) + 1
+            end
+        end
+
+        -- CoinVisual — ребёнок Coin_Server (та же монета): чтобы не было двух целей
+        -- на одну конфету, оставляем только родителя.
+        if #list > 1 then
+            local keep = {}
+            for i = 1, #list do
+                if not seen[list[i].Parent] then keep[#keep + 1] = list[i] end
+            end
+            list = keep
+        end
+
+        -- Режим для статуса/лога: CoinID > вручную > теги > имя
+        local order = { "CoinID", "вручную", "теги", "имя", "имя модели" }
+        local modeParts = {}
+        for i = 1, #order do
+            local k = order[i]
+            if kinds[k] then
+                modeParts[#modeParts + 1] = ("%s x%d"):format(k, kinds[k])
+            end
+        end
+        local mode = #modeParts > 0 and table.concat(modeParts, " + ") or nil
+
+        coinCache     = list
+        currencyCount = #list
+        currencyMode  = mode
+        currencyName  = list[1] and list[1].Name or nil
+
+        if #list > 0 then
+            if loggedCurrency ~= mode then
+                loggedCurrency = mode
+                addLog(("валюта: %d шт. (%s) — %s"):format(#list, mode or "?",
+                    currencyName or "?"))
+            end
+        elseif os.clock() - lastDump > 10 then
+            lastDump = os.clock()
+            addLog(dumpCandidates(all))
+        end
+
+        coinNextScan = os.clock() + (#list > 0 and CONFIG.COIN_SCAN_INTERVAL
+            or CONFIG.COIN_RESCAN_EMPTY)
+    end
+
+    -- Выбор цели: ближайшая ПО СТОИМОСТИ = 3D-дистанция + штраф за толпу.
+    -- Толпа НЕ выкидывает цель (раньше именно из-за этого бот стоял на спавне с
+    -- надписью "валюта не найдена", когда все монеты были "заняты" другими).
+    local function findNearestCoin(origin, ignoreCrowd)
+        if os.clock() >= coinNextScan then
+            refreshCoinCache()
+        end
+
+        local others = ignoreCrowd and {} or otherPlayerPositions()
+        local best, bestCost = nil, math.huge
+
+        for i = 1, #coinCache do
+            local coin = coinCache[i]
+            if not coinGone(coin) and not isRecentlyVisited(coin) then
+                local dist = (origin - coin.Position).Magnitude
+                if dist < CONFIG.COIN_RANGE then
+                    local cost = dist + crowdPenalty(coin.Position, others)
+                    if cost < bestCost then
+                        bestCost = cost
+                        best     = coin
+                    end
+                end
+            end
+        end
+
+        return best
+    end
+
+    -- v6.1: СЛУЧАЙНАЯ цель из самых свободных (раз в 30..45 c).
+    -- Нужна, чтобы куча ботов не липла к одной монете: даже если все летят к
+    -- ближайшей, каждый раз в 30..45 c бот уходит к другой.
+    local function randomCoin(origin)
+        local others = otherPlayerPositions()
+        local bestCrowd, pool = nil, {}
+
+        for i = 1, #coinCache do
+            local coin = coinCache[i]
+            if not coinGone(coin) and not isRecentlyVisited(coin) then
+                local dist = (origin - coin.Position).Magnitude
+                if dist < CONFIG.COIN_RANGE then
+                    local n = crowdAt(coin.Position, others)
+                    if bestCrowd == nil or n < bestCrowd then
+                        bestCrowd, pool = n, { coin }
+                    elseif n == bestCrowd then
+                        pool[#pool + 1] = coin
+                    end
+                end
+            end
+        end
+
+        if #pool == 0 then return nil end
+        return pool[math.random(1, #pool)]
+    end
+
+        -- 5) часть внутри модели/папки с "coin" в имени — тоже для подбираемых
+        local parent = p.Parent
+        if parent and (parent:IsA("Model") or parent:IsA("Folder"))
+            and nameHasCurrencyWord(parent.Name) and isInteractivePart(p) then
+            return "имя модели"
+        end
+        return nil
+    end
+
+
+    -- Ручные имена: CONFIG.CURRENCY_NAME (точное) и CONFIG.CURRENCY_EXTRA (список).
+    -- Нужны, если в игре валюта называется без "coin" (например "Candy").
+    local function nameIsExtraCurrency(name)
+        if not name then return false end
+        if CONFIG.CURRENCY_NAME ~= nil and name == CONFIG.CURRENCY_NAME then return true end
+        for i = 1, #CONFIG.CURRENCY_EXTRA do
+            if name == CONFIG.CURRENCY_EXTRA[i] then return true end
+        end
+        return false
+    end
+
+    --========================================================
+    -- v5.9: СЧЁТ ПО ФАКТУ (событие сервера + фактический подбор)
+    --========================================================
+    -- Игра присылает CoinCollected(id, count, capacity), где count — сколько
+    -- валюты уже собрано. Считаем РАЗНИЦУ, а не «долетел = +1».
+    local function findRemoteEvent(root, shortName)
+        if not root then return nil end
+        for _, d in ipairs(root:GetDescendants()) do
+            if d:IsA("RemoteEvent") and string.find(string.lower(d.Name), shortName, 1, true) then
+                return d
+            end
+        end
+        return nil
+    end
+
+    local function bindCoinEvents()
+        if coinEventBound then return end
+        local holder = ReplicatedStorage:FindFirstChild("Remotes")
+            or ReplicatedStorage:FindFirstChild("RemoteEvents")
+            or ReplicatedStorage
+
+        local ev = findRemoteEvent(holder, "coincollected")
+        if ev then
+            coinEventBound = true
+            ev.OnClientEvent:Connect(function(id, count, capacity)
+                if type(count) ~= "number" or count ~= count or count < 0 then return end
+                -- Если валюта жёстко задана в конфиге — чужие события не считаем
+                if type(id) == "string" and CONFIG.CURRENCY_ID ~= nil
+                    and id ~= CONFIG.CURRENCY_ID then
+                    return
+                end
+
+                if bagBaseline == nil then
+                    bagBaseline = count                    -- первый пакет: берём за базу
+                elseif count > bagBaseline then
+                    roundCoins  += (count - bagBaseline)   -- ФАКТИЧЕСКИЙ прирост
+                    bagBaseline  = count
+                    lastProgress = os.clock()
+                    missStreak   = 0
+                else
+                    -- v6.1: счётчик УМЕНЬШИЛСЯ = начался новый раунд (раньше это
+                    -- ловила надпись Intermission, теперь её детекта нет).
+                    if count < bagBaseline and bagBaseline > 0 then
+                        roundCoins    = 0
+                        currentTarget = nil
+                        visited       = {}
+                        failedUntil   = {}
+                        coinNextScan  = 0
+                        targetLogged  = false
+                        addLog("новый раунд (счётчик валюты сброшен)")
+                    end
+                    bagBaseline = count
+                end
+
+                bagCount = count
+                if type(capacity) == "number" and capacity > 0 then bagCapacity = capacity end
+                if farmRunning then updateStatus() end
+            end)
+            print("[Cosmic] счёт валюты по событию сервера: " .. ev:GetFullName())
+        end
+
+        local started = findRemoteEvent(holder, "coinsstarted")
+        if started then
+            started.OnClientEvent:Connect(function()
+                bagBaseline = 0
+                bagCount    = 0
+                bagCapacity = nil
+                roundCoins  = 0
+                missStreak  = 0
+                if farmRunning then updateStatus() end
+            end)
+            print("[Cosmic] новый раунд валюты: " .. started:GetFullName())
+        end
+    end
+
+    -- v5.9: валюта реально ушла? (часть исчезла / Collected / CoinVisual.Collected)
+    local function coinTaken(coin)
+        if coinGone(coin) then return true end
+        local ok, vis = pcall(function() return coin:FindFirstChild("CoinVisual") end)
+        if ok and vis then
+            local ok2, coll = pcall(vis.GetAttribute, vis, "Collected")
+            if ok2 and coll == true then return true end
+        end
+        return false
+    end
+
+    -- Касание валюты для исполнителей, которые умеют firetouchinterest.
+    -- Сервер сам выдаёт валюту, и мы видим факт, а не «долетел — засчитал».
+    local function touchAssist(root, coin)
+        if type(firetouchinterest) ~= "function" then return false end
+        pcall(firetouchinterest, root, coin, 0)
+        task.wait()
+        pcall(firetouchinterest, root, coin, 1)
+        return true
+    end
+
+    -- v5.9: ПОДБОР ПРОВЕРЯЕТСЯ ПО ФАКТУ.
+    -- Держим персонажа над валютой тем же плавным CFrame-шагом (без телепортов)
+    -- и ждём, пока игра реально её заберёт. Ничего не забралось за timeout —
+    -- значит это декор, засчитывать нечего.
+    local function confirmPickup(coin, goalYArg)
+        if not coin or not getRoot() then return false end
+
+        -- v6.1: держим гуманоида в PlatformStand, иначе его "пол" подпирает корень
+        -- и бот не может ни опуститься к валюте ниже пола, ни пройти сквозь него.
+        local hum = getHumanoid()
+        if hum and not hum.PlatformStand then hum.PlatformStand = true end
+
+        local bagBefore   = bagCount
+        local roundBefore = roundCoins
+        local deadline    = os.clock() + CONFIG.TOUCH_TIMEOUT
+        local assistAt    = os.clock() + CONFIG.TOUCH_ASSIST_DELAY
+        local goalY       = goalYArg or (coin.Position.Y + CONFIG.PICKUP_LIFT)
+
+        local taken     = false
+        while farmRunning and coin.Parent and os.clock() < deadline do
+            if coinTaken(coin) then
+                taken = true
+                break
+            end
+            if coinEventBound and (bagCount > bagBefore or roundCoins > roundBefore) then
+                taken = true
+                break
+            end
+
+            local r = getRoot()
+            if not r then break end
+
+            -- Сначала yield, потом читаем позиции: иначе шаг считается по устаревшей
+            local dt    = math.clamp(task.wait(), 0, 0.05)
+            local to    = coin.Position
+            local dx    = to.X - r.Position.X
+            local dz    = to.Z - r.Position.Z
+            local dist  = math.sqrt(dx * dx + dz * dz)
+            local spd   = math.max(getEffectiveSpeed(dist), CONFIG.MIN_FARM_SPEED)
+            local step  = math.min(spd * dt, CONFIG.MAX_FRAME_MOVE)
+            local alpha = dist > 1e-3 and math.clamp(step / dist, 0, 1) or 0
+
+            local nx = r.Position.X + dx * alpha
+            local nz = r.Position.Z + dz * alpha
+            local dy = goalY - r.Position.Y
+            local ny
+            if math.abs(dy) <= step then
+                ny = goalY
+            else
+                ny = r.Position.Y + (dy > 0 and step or -step)
+            end
+
+            pcall(function()
+                r.CFrame = CFrame.new(nx, ny, nz) * r.CFrame.Rotation
+                r.AssemblyLinearVelocity  = Vector3.new(0, 0, 0)
+                r.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+            end)
+
+            if CONFIG.TOUCH_ASSIST and os.clock() >= assistAt then
+                assistAt = os.clock() + CONFIG.TOUCH_RETRY_AT
+                touchAssist(r, coin)
+            end
+        end
+
+        if not taken then taken = coinTaken(coin) end
+        if taken and coin.Parent then
+            -- Сервер уже выдал валюту, но часть ещё висит (репликация) —
+            -- второй раз к ней не летим.
+            markFailed(coin)
+        end
+        return taken
+    end
+
+    -- v6.0: короткая пауза с УДЕРЖАНИЕМ корня на месте.
+    -- Noclip выключает коллизии, поэтому без записи CFrame персонаж за паузу
+    -- (0.1..0.3 c) успевает просесть вниз — и следующий полёт начинается с того,
+    -- что бот сначала опускается, а потом поднимается. Держим позицию: просадки нет.
+    local function holdStill(seconds)
+        seconds = seconds or 0.1
+        local root = getRoot()
+        local hum  = getHumanoid()
+        if not root or not hum or hum.Health <= 0 then
+            task.wait(seconds)
+            return
+        end
+        -- v6.1: пауза тоже идёт "в noclip" — иначе Humanoid подопрёт корень полом
+        -- и после паузы бот начнёт не оттуда, откуда остановился.
+        if not hum.PlatformStand then hum.PlatformStand = true end
+        local pos    = root.Position
+        local untilT = os.clock() + seconds
+        repeat
+            task.wait()
+            pcall(function()
+                root.CFrame = CFrame.new(pos) * root.CFrame.Rotation
+                root.AssemblyLinearVelocity  = Vector3.new(0, 0, 0)
+                root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+            end)
+        until os.clock() >= untilT
+    end
+
+    --========================================================
+    -- FARM CORE
+    -- Один цикл: ближайшая монета -> долететь -> отметить -> вернуться.
+    -- =======================================================
+    local function farmIteration()
+        local root = getRoot()
+        local hum  = getHumanoid()
+        if not root or not hum then
+            idleReason = "нет персонажа"
+            dbgText    = ""
+            task.wait(0.5)
+            return
+        end
+        if hum.Health <= 0 then
+            idleReason = "персонаж мёртв (ждём респавн)"
+            dbgText    = ""
+            task.wait(0.5)
+            return
+        end
+
+        -- Ручной полёт конфликтует с фармом
+        if flags.fly then
+            idleReason = "включён ручной Fly"
+            dbgText    = ""
+            task.wait(0.2)
+            return
+        end
+
+        -- Авто-ресет: провалились ниже карты (с подтверждением, чтобы не ловить
+        -- ложное срабатывание на телепорте в начале раунда)
+        if flags.autoReset and root.Position.Y < CONFIG.RESET_Y then
+            if not fallSince then fallSince = os.clock() end
+            if os.clock() - fallSince >= CONFIG.FALL_CONFIRM then
+                respawnNow()
+                return
+            end
+        else
+            fallSince = nil
+        end
+
+        -- v6.1: раз в 30..45 c уходим к СЛУЧАЙНОЙ монете (из самых свободных),
+        -- чтобы куча ботов не липла к одной. Таймер не сбрасывается при неудаче:
+        -- иначе при пустой карте он бы дёргался каждый кадр.
+        if flags.avoidCrowd and os.clock() >= wanderNextAt then
+            wanderNextAt = os.clock() + CONFIG.CROWD_WANDER_MIN
+                + math.random() * (CONFIG.CROWD_WANDER_MAX - CONFIG.CROWD_WANDER_MIN)
+            wanderTarget = randomCoin(root.Position)
+            if wanderTarget then
+                addLog("ухожу от толпы: случайная монета")
+            end
+        end
+
+        if not (currentTarget and currentTarget.Parent) then
+            currentTarget = wanderTarget or findNearestCoin(root.Position)
+            wanderTarget  = nil
+            if currentTarget and not targetLogged then
+                targetLogged = true
+                addLog(("цель: %s (%.0f ст)"):format(
+                    currentTarget.Name, (currentTarget.Position - root.Position).Magnitude))
+            end
+        end
+
+        -- Монет нет (начало раунда / все собраны): ждём и НЕ считаем это простоем
+        if not currentTarget then
+            idleReason   = "валюта не найдена"
+            dbgText      = ""
+            lastProgress = os.clock()
+            holdStill(0.3)   -- v6.0: ждём, не давая персонажу просесть вниз
+            return
+        end
+
+        -- Авто-ресет: есть цель, но давно ничего не собираем (монеты забирают / недостижимы)
+        if flags.autoReset
+            and os.clock() >= graceUntil
+            and (os.clock() - lastProgress) > CONFIG.IDLE_RESET then
+            lastProgress = os.clock()
+            markFailed(currentTarget)   -- v5.8: эту цель больше не берём FAIL_BLACKLIST сек.
+            respawnNow()
+            return
+        end
+
+        -- v6.0: ОДНА точка полёта на всю цель (по пути не меняется)
+        local hipOffset = computeHipOffset()
+        local goal      = flightGoal(currentTarget, hipOffset)
+
+        -- v6.1: пока ведём персонажа — PlatformStand, чтобы Humanoid не подпирал
+        -- его полом (см. maintain). Без этого бот "не пробивал" пол.
+        movingToCoin  = true
+        hum.AutoRotate = false
+        if not hum.PlatformStand then hum.PlatformStand = true end
+
+        local lastPos      = root.Position
+        local lastDist     = math.huge
+        local stuck        = 0
+        local reached      = false
+        local retargetAt   = os.clock() + CONFIG.RETARGET_INTERVAL
+        local approachBest = (goal - root.Position).Magnitude
+
+        while farmRunning and currentTarget and currentTarget.Parent do
+            local r = getRoot()
+            if not r then break end
+
+            local dt = math.clamp(task.wait(), 0, 0.05)
+
+            -- v6.1: пересмотр цели РЕДКО (1.5 c) и только при явном выигрыше
+            -- (>= RETARGET_ADVANTAGE студов). Раньше 0.35 c + 25% заворачивали бота
+            -- в сторону на каждом шаге — со стороны это было похоже на объезд.
+            if os.clock() >= retargetAt then
+                retargetAt = os.clock() + CONFIG.RETARGET_INTERVAL
+
+                -- Другой игрок уже НА монете и заметно ближе — не летим хвостом
+                if isTakenByOther(currentTarget.Position, r.Position, otherPlayerPositions()) then
+                    markVisited(currentTarget)
+                    currentTarget = nil
+                    break
+                end
+
+                local cand = findNearestCoin(r.Position)
+                if cand and cand ~= currentTarget and cand.Parent then
+                    local dCur = (currentTarget.Position - r.Position).Magnitude
+                    local dNew = (cand.Position - r.Position).Magnitude
+                    if dNew < dCur - CONFIG.RETARGET_ADVANTAGE then
+                        currentTarget = cand
+                        goal          = flightGoal(cand, hipOffset)
+                        approachBest  = (goal - r.Position).Magnitude
+                    end
+                end
+            end
+
+
+            -- v6.0: ведём корень по ПРЯМОЙ 3D-линии к точке над валютой.
+            -- Вертикаль распределена по всему пути так же, как горизонталь:
+            -- бот поднимается/опускается РАВНОМЕРНО, а не "сначала по X, потом
+            -- на высоту монеты по Y". Высота — из goal (считается один раз на
+            -- цель), X/Z — живая позиция валюты (на случай, если она на
+            -- движущейся платформе).
+            local to     = currentTarget.Position
+            local delta  = Vector3.new(to.X - r.Position.X,
+                goal.Y - r.Position.Y,
+                to.Z - r.Position.Z)
+            local dx     = delta.X
+            local dz     = delta.Z
+            local dy     = delta.Y
+            local distXZ = math.sqrt(dx * dx + dz * dz)
+            local dist3  = delta.Magnitude
+            lastDist     = distXZ
+
+            -- Пока реально приближаемся (по 3D) — простой не засчитывается
+            if dist3 < approachBest - 0.5 then
+                approachBest = dist3
+                lastProgress = os.clock()
+            end
+
+            -- Догнал = горизонталь в STOP_DIST И высота в STOP_DIST. Высота
+            -- догоняется той же прямой, поэтому "под монетой -> вверх" не бывает.
+            if distXZ <= CONFIG.STOP_DIST and math.abs(dy) <= CONFIG.STOP_DIST then
+                -- v5.9: НЕ «долетел = засчитал». Держимся над валютой и ждём,
+                -- пока игра реально её заберёт (исчезла / Collected / CoinCollected).
+                reached = confirmPickup(currentTarget, goal.Y)
+                if reached then
+                    missStreak  = 0
+                    lastProgress = os.clock()
+                else
+                    missStreak += 1
+                    markFailed(currentTarget)   -- декор / сервер не выдал: не кружимся
+                    addLog(("не забрали %s за %.1f c — в чёрный список")
+                        :format(tostring(currentTarget.Name), CONFIG.TOUCH_TIMEOUT))
+                    if missStreak >= 5 then
+                        missStreak  = 0
+                        failedUntil = {}
+                        addLog("5 целей подряд не подобрались — чёрный список очищен")
+                    end
+                end
+                break
+            end
+
+            local spd   = getEffectiveSpeed(distXZ)
+            local step  = math.min(spd * dt, CONFIG.MAX_FRAME_MOVE)
+            local alpha = dist3 > 1e-3 and math.clamp(step / dist3, 0, 1) or 1
+
+            local nx = r.Position.X + dx * alpha
+            local ny = r.Position.Y + dy * alpha
+            local nz = r.Position.Z + dz * alpha
+
+            -- Пишем позицию. Основной способ — CFrame (как в v5.3). Если персонаж
+            -- при этом не сдвигается вообще (физика/игра возвращают позицию),
+            -- автоматически переключаемся на velocity-толчок.
+            if moveMode == "cframe" then
+                pcall(function()
+                    r.CFrame = CFrame.new(nx, ny, nz) * r.CFrame.Rotation
+                    r.AssemblyLinearVelocity  = Vector3.new(0, 0, 0)
+                    r.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+                end)
+            else
+                local dir = Vector3.new(dx, dy, dz)
+                if dir.Magnitude > 1e-3 then dir = dir.Unit end
+                pcall(function()
+                    r.AssemblyLinearVelocity  = dir * spd
+                    r.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+                end)
+            end
+
+            if os.clock() >= dbgNextAt then
+                dbgNextAt = os.clock() + 0.5
+                dbgText = ("цель %.14s %.0fст | v=%.1f | %s"):format(
+                    currentTarget.Name, distXZ, spd, moveMode)
+            end
+
+            -- Застревание: просто бросаем цель (никаких авто-ресетов по "не двигается")
+            if os.clock() < graceUntil then
+                stuck   = 0
+                lastPos = r.Position
+            elseif (r.Position - lastPos).Magnitude < 0.05 then
+                stuck += dt
+                if stuck >= 0.5 and moveMode == "cframe" and distXZ > 4 then
+                    -- CFrame не сдвигает персонажа -> пробуем velocity
+                    moveMode   = "velocity"
+                    stuck      = 0
+                    lastPos    = r.Position
+                    print("[Cosmic] CFrame не двигает персонажа -> перешёл на velocity")
+                elseif stuck >= CONFIG.STUCK_LIMIT then
+                    idleReason = (moveMode == "velocity" and "не двигается даже velocity")
+                        or "не двигается (CFrame)"
+                    print("[Cosmic] цель недостижима: " .. idleReason)
+                    markVisited(currentTarget)
+                    markFailed(currentTarget)   -- v5.8: дольше не возвращаемся
+                    currentTarget = nil
+                    break
+                end
+            else
+                idleReason = "лечу к цели"
+                stuck      = 0
+                lastPos    = r.Position
+            end
+        end
+
+        movingToCoin = false
+        idleReason   = "выбираю следующую цель"
+        dbgText      = ""
+
+        local endHum = getHumanoid()
+        if endHum and not flags.fly then
+            endHum.AutoRotate = true
+        end
+
+        -- Монета исчезла, когда мы были уже рядом (собрали касанием) — тоже успех
+        if not reached and currentTarget and currentTarget.Parent == nil
+            and lastDist <= CONFIG.STOP_DIST * 2 then
+            reached = true
+        end
+
+        if currentTarget then
+            markVisited(currentTarget)
+            currentTarget = nil
+        end
+
+        if reached then
+            lastProgress = os.clock()
+            -- v5.9: при событии сервера счёт уже увеличен по фактическому приросту
+            if not coinEventBound then roundCoins += 1 end
+            updateStatus()
+            holdStill(0.1)   -- v6.0: даём сработать сбору, не давая просесть
+        end
+
+        -- Авто-ресет по количеству собранных за раунд монет
+        if reached and flags.autoReset
+            and CONFIG.RESET_AT_COINS > 0
+            and roundCoins >= CONFIG.RESET_AT_COINS then
+            respawnNow()
+        end
+    end
+
+    --========================================================
+    -- v6.1: СУПЕРВИЗОР. Стоп-в-лобби (enterLobby / leaveLobby / pollRound)
+    -- удалён целиком: он не спасал (бот всё равно летал по лобби на декор),
+    -- занимал место в GUI и иногда ложно останавливал фарм из-за надписи
+    -- "intermission". Раунд определяется по респавну персонажа и по счётчику
+    -- валюты сервера.
+    --========================================================
+
+    function farmStart()
+        farmRunning   = true
+        currentTarget = nil
+        movingToCoin  = false
+        wanderTarget  = nil
+        wanderNextAt  = os.clock() + CONFIG.CROWD_WANDER_MIN
+            + math.random() * (CONFIG.CROWD_WANDER_MAX - CONFIG.CROWD_WANDER_MIN)
+        visited       = {}
+        fallSince     = nil
+        lastProgress  = os.clock()
+        graceUntil    = os.clock() + CONFIG.SPAWN_GRACE
+        moveMode      = "cframe"
+        idleReason    = "старт: ищу валюту"
+        dbgText       = ""
+        coinNextScan  = 0
+        failedUntil   = {}   -- чистый чёрный список недостижимых целей
+        missStreak    = 0    -- счётчик «не подобралось подряд» сбрасываем
+
+        runBtn.Text = "Stop farm"
+        runBtn.BackgroundColor3 = COLORS.accent2
+        addLog("фарм запущен")
+        updateStatus()
+    end
+
+    function farmStop()
+        farmRunning   = false
+        currentTarget = nil
+        movingToCoin  = false
+        wanderTarget  = nil
+        moveMode      = "cframe"
+        idleReason    = "остановлен"
+        dbgText       = ""
+        runBtn.Text = "Run farm"
+        runBtn.BackgroundColor3 = COLORS.accent
+        addLog("фарм остановлен")
+        updateStatus()
+    end
+
+    runBtn.MouseButton1Click:Connect(function()
+        if farmRunning then farmStop() else farmStart() end
+    end)
+
+    task.spawn(function()
+        while true do
+            if not farmRunning then
+                task.wait(0.2)
+            else
+                local ok, err = pcall(farmIteration)
+                if not ok then
+                    warn("[Cosmic] farm error:", err)
+                    idleReason = "ошибка в farmIteration (смотри лог)"
+                    addLog("ошибка фарма: " .. tostring(err))
+                    task.wait(0.5)
+                end
+            end
+        end
+    end)
+
+    --========================================================
+    -- ДИАГНОСТИКА: строка состояния в окне + лог в консоль.
+    -- Позволяет точно увидеть, почему бот не двигается.
+    --========================================================
+    task.spawn(function()
+        while true do
+            task.wait(0.5)
+            if farmRunning then updateStatus() end
+        end
+    end)
+
+    task.spawn(function()
+        while true do
+            task.wait(CONFIG.DBG_INTERVAL)
+
+            if not CONFIG.DEBUG or not farmRunning then
+                lastDbgPos = nil
+            else
+                local r     = getRoot()
+                local pos   = r and r.Position or Vector3.new()
+                local moved = lastDbgPos and (pos - lastDbgPos).Magnitude or 0
+                lastDbgPos  = pos
+
+                print((("[Cosmic][dbg] run=%s fly=%s mode=%s | вал=%d (%s) | событие=%s"
+                    .. " | цель=%s | сдвиг=%.1f ст | поз=(%.0f, %.0f, %.0f) | %s")
+                    :format(
+                        tostring(farmRunning), tostring(flags.fly),
+                        moveMode, currencyCount, currencyMode or "не найдена",
+                        coinEventBound and ("да, мешок " .. tostring(bagCount)) or "нет",
+                        currentTarget and currentTarget.Name or "—",
+                        moved, pos.X, pos.Y, pos.Z, idleReason)))
+            end
+        end
+    end)
+
+    --========================================================
+    -- LAUNCH
+    --========================================================
+    task.spawn(function()
+        task.wait(2)
+
+        updateSpeedVisuals()
+        bindCoinEvents()  -- v5.9: подписка на CoinCollected (счёт по факту)
+        addLog("v6.1 загружен — введи пароль")
+
+        main.Visible = true
+        main.Size = UDim2.new(0, 0, 0, 0)
+        TweenService:Create(main, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Size = SIZE_PASS,
+        }):Play()
+
+        -- Если персонаж уже в игре — сразу готовим состояние (без авто-старта до пароля)
+        if LocalPlayer.Character then
+            onCharacterSpawn(LocalPlayer.Character)
+        end
+    end)
+
+    print("[Cosmic UI v6.1 MM2] Loaded. Password: " .. CONFIG.PASSWORD)
+
+
